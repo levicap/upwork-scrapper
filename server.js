@@ -60,8 +60,8 @@ async function scrapeUpwork(searchQuery, maxJobs = 100) {
     };
 
     // Add Chrome path for production (Render)
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      connectOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH) {
+      connectOptions.executablePath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
     }
 
     const connection = await connect(connectOptions);
