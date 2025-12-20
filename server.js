@@ -3,6 +3,31 @@ const { connect } = require('puppeteer-real-browser');
 const fs = require('fs');
 const path = require('path');
 
+// Set Chrome path for production environments
+if (process.env.NODE_ENV === 'production' && !process.env.CHROME_PATH) {
+  // Try common Chrome/Chromium paths on Linux
+  const chromePaths = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser'
+  ];
+  
+  for (const chromePath of chromePaths) {
+    try {
+      if (require('fs').existsSync(chromePath)) {
+        process.env.CHROME_PATH = chromePath;
+        console.log(`✅ Chrome found at: ${chromePath}`);
+        break;
+      }
+    } catch (e) {}
+  }
+  
+  if (!process.env.CHROME_PATH) {
+    console.warn('⚠️ Chrome not found in standard paths');
+  }
+}
+
 const app = express();
 const PORT = 3000;
 
