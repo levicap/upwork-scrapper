@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: upwork-scraper
+    env: node
+    buildCommand: |
+      apt-get update
+      apt-get install -y chromium chromium-driver
+      npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/chromium

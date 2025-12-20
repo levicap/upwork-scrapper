@@ -48,11 +48,23 @@ async function scrapeUpwork(searchQuery, maxJobs = 100) {
   let browser, page;
   
   try {
-    const connection = await connect({
-      headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    const connectOptions = {
+      headless: 'auto',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ],
       turnstile: true
-    });
+    };
+
+    // Add Chrome path for production (Render)
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      connectOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
+    const connection = await connect(connectOptions);
     
     browser = connection.browser;
     page = connection.page;
