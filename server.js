@@ -2,25 +2,39 @@ const express = require('express');
 const { connect } = require('puppeteer-real-browser');
 const fs = require('fs');
 const path = require('path');
+const puppeteer = require('puppeteer');
 
 // Set Chrome path for production environments
 if (process.env.NODE_ENV === 'production' && !process.env.CHROME_PATH) {
-  // Try common Chrome/Chromium paths on Linux
-  const chromePaths = [
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser'
-  ];
+  // Try to use Puppeteer's bundled Chrome first
+  try {
+    const executablePath = puppeteer.executablePath();
+    if (fs.existsSync(executablePath)) {
+      process.env.CHROME_PATH = executablePath;
+      console.log(`✅ Using Puppeteer's Chrome at: ${executablePath}`);
+    }
+  } catch (e) {
+    console.log('⚠️ Puppeteer Chrome not found, trying system Chrome...');
+  }
   
-  for (const chromePath of chromePaths) {
-    try {
-      if (require('fs').existsSync(chromePath)) {
-        process.env.CHROME_PATH = chromePath;
-        console.log(`✅ Chrome found at: ${chromePath}`);
-        break;
-      }
-    } catch (e) {}
+  // If Puppeteer's Chrome not found, try common Chrome/Chromium paths on Linux
+  if (!process.env.CHROME_PATH) {
+    const chromePaths = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser'
+    ];
+    
+    for (const chromePath of chromePaths) {
+      try {
+        if (fs.existsSync(chromePath)) {
+          process.env.CHROME_PATH = chromePath;
+          console.log(`✅ Chrome found at: ${chromePath}`);
+          break;
+        }
+      } catch (e) {}
+    }
   }
   
   if (!process.env.CHROME_PATH) {
