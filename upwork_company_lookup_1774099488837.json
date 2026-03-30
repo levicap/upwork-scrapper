@@ -1,0 +1,205 @@
+[
+  {
+    "companyId": "2024961342492965284",
+    "jobTitle": "Screen Connect & ConnectWise Expert Needed",
+    "results": [
+      {
+        "alias": "company-safe",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 19,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (VariableTypeMismatch@[company]) : Variable 'id' of type 'String!' used in position expecting type 'ID!'"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 26,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/companyId]) : Field 'companyId' in type 'CompanyInfo' is undefined"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 36,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/contractDate]) : Field 'contractDate' in type 'CompanyInfo' is undefined"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 49,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/isEDCReplicated]) : Field 'isEDCReplicated' in type 'CompanyInfo' is undefined"
+            }
+          ]
+        },
+        "query": "query CompanySafe($id: String!) {\n      company(id: $id) { companyId contractDate isEDCReplicated }\n    }",
+        "status": 200
+      },
+      {
+        "alias": "company-name-probe",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 26,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/companyId]) : Field 'companyId' in type 'CompanyInfo' is undefined"
+            }
+          ]
+        },
+        "query": "query CompanyNameProbe($id: ID!) {\n      company(id: $id) { companyId }\n    }",
+        "status": 200
+      },
+      {
+        "alias": "jobAuth-buyer",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 28,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (VariableTypeMismatch@[jobAuthDetails]) : Variable 'id' of type 'String!' used in position expecting type 'ID!'"
+            }
+          ]
+        },
+        "query": "query JobAuthBuyer($id: String!) {\n        jobAuthDetails(id: $id) {\n          buyer {\n            enterprise\n            isPaymentMethodVerified\n            info {\n              company { companyId contractDate isEDCReplicated }\n              location { city country countryTimezone }\n              stats {\n                score\n                feedbackCount\n                totalAssignments\n                hoursCount\n                totalCharges { amount }\n                totalJobsWithHires\n                activeAssignmentsCount\n              }\n            }\n          }\n        }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "jobAuth-company-name",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 28,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (VariableTypeMismatch@[jobAuthDetails]) : Variable 'id' of type 'String!' used in position expecting type 'ID!'"
+            }
+          ]
+        },
+        "query": "query JobAuthCompName($id: String!) {\n        jobAuthDetails(id: $id) {\n          buyer { info { company { companyId name profile { industry size } } } }\n        }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "jobAuth-full",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 28,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (VariableTypeMismatch@[jobAuthDetails]) : Variable 'id' of type 'String!' used in position expecting type 'ID!'"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 28,
+                  "line": 20
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[jobAuthDetails/opening/job/info/description]) : Field 'description' in type 'Job' is undefined"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 15,
+                  "line": 21
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[jobAuthDetails/opening/job/client]) : Field 'client' in type 'JobPubOpeningInfo' is undefined"
+            }
+          ]
+        },
+        "query": "query JobAuthFull($id: String!) {\n        jobAuthDetails(id: $id) {\n          buyer {\n            enterprise\n            isPaymentMethodVerified\n            info {\n              company { companyId contractDate isEDCReplicated name profile { industry size } }\n              location { city country countryTimezone }\n              stats { score feedbackCount totalAssignments totalCharges { amount } activeAssignmentsCount }\n            }\n            workHistory {\n              contractorInfo { contractorName }\n              jobInfo { title type }\n              startDate endDate status totalCharge\n              feedback { score comment }\n            }\n          }\n          opening {\n            job {\n              info { title description }\n              client { location { country } totalFeedback totalReviews }\n            }\n          }\n          hiredApplicantNames\n        }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "org-context",
+        "data": {
+          "data": {
+            "companySelector": {
+              "items": [
+                {
+                  "monetizedTitle": "Freelancer",
+                  "organizationId": "1760684500816621569",
+                  "organizationType": "SoleProprietor",
+                  "title": "Ahmed Ben Yahia",
+                  "typeTitle": "Freelancer"
+                }
+              ]
+            },
+            "organization": {
+              "flag": {
+                "agency": false,
+                "client": false,
+                "individual": true,
+                "vendor": true
+              },
+              "id": "1760684500816621569",
+              "legacyType": "VENDOR",
+              "type": "SOLE_PROPRIETOR"
+            }
+          }
+        },
+        "query": "query {\n      organization { id type legacyType flag { client vendor agency individual } }\n      companySelector {\n        items { organizationId title typeTitle organizationType monetizedTitle }\n      }\n    }",
+        "status": 200
+      }
+    ],
+    "runAt": "2026-03-21T13:24:19.837Z"
+  }
+]

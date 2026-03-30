@@ -1,0 +1,69 @@
+[
+  {
+    "companyId": "1548206791863472128",
+    "jobCiphertext": "~022024531811970228177",
+    "jobTitle": "GHL expert GoHighLevel API and webhooks to automate sub-account provisioning, user assignment",
+    "results": [
+      {
+        "alias": "jobAuth-access-check",
+        "data": {
+          "message": "Authorization failed: provided tenant (organization) id could not be found in users tenants"
+        },
+        "query": "query JobAuthCheck($id: ID!) {\n        jobAuthDetails(id: $id) { buyer { enterprise } }\n      }",
+        "status": 403,
+        "tokenUsed": "JobDetailsNuxt_vt"
+      },
+      {
+        "alias": "jobAuth-buyer",
+        "data": {
+          "message": "Authorization failed: provided tenant (organization) id could not be found in users tenants"
+        },
+        "query": "query JobAuthBuyer($id: ID!) {\n        jobAuthDetails(id: $id) {\n          buyer {\n            enterprise\n            isPaymentMethodVerified\n            info {\n              company { companyId contractDate isEDCReplicated name profile { industry size } }\n              location { city country countryTimezone }\n              stats {\n                score feedbackCount totalAssignments hoursCount\n                totalCharges { amount } totalJobsWithHires activeAssignmentsCount\n              }\n            }\n          }\n        }\n      }",
+        "status": 403,
+        "tokenUsed": "JobDetailsNuxt_vt"
+      },
+      {
+        "alias": "jobAuth-full",
+        "data": {
+          "message": "Authorization failed: provided tenant (organization) id could not be found in users tenants"
+        },
+        "query": "query JobAuthFull($id: ID!) {\n        jobAuthDetails(id: $id) {\n          buyer {\n            enterprise\n            isPaymentMethodVerified\n            info {\n              company { companyId contractDate isEDCReplicated name profile { industry size } }\n              location { city country countryTimezone }\n              stats { score feedbackCount totalAssignments totalCharges { amount } activeAssignmentsCount totalJobsWithHires }\n            }\n            workHistory {\n              contractorInfo { contractorName }\n              jobInfo { title type }\n              startDate endDate status totalCharge\n              feedback { score comment }\n            }\n          }\n          opening {\n            job {\n              info { title }\n              category { name }\n              categoryGroup { name }\n            }\n          }\n          hiredApplicantNames\n        }\n      }",
+        "status": 403,
+        "tokenUsed": "JobDetailsNuxt_vt"
+      },
+      {
+        "alias": "org-context",
+        "data": {
+          "data": {
+            "companySelector": {
+              "items": [
+                {
+                  "monetizedTitle": "Freelancer",
+                  "organizationId": "1760684500816621569",
+                  "organizationType": "SoleProprietor",
+                  "title": "Ahmed Ben Yahia",
+                  "typeTitle": "Freelancer"
+                }
+              ]
+            },
+            "organization": {
+              "flag": {
+                "agency": false,
+                "client": false,
+                "individual": true,
+                "vendor": true
+              },
+              "id": "1760684500816621569",
+              "legacyType": "VENDOR",
+              "type": "SOLE_PROPRIETOR"
+            }
+          }
+        },
+        "query": "query {\n      organization { id type legacyType flag { client vendor agency individual } }\n      companySelector {\n        items { organizationId title typeTitle organizationType monetizedTitle }\n      }\n    }",
+        "status": 200,
+        "tokenUsed": "oauth2_global_js_token"
+      }
+    ],
+    "runAt": "2026-03-21T14:10:26.088Z"
+  }
+]

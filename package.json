@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "capture": "node capture.js",
     "build": "npm install",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -15,10 +16,15 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "puppeteer": "^24.34.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-real-browser": "^1.4.4"
+  },
+  "devDependencies": {
+    "canvas": "^3.2.1"
   }
 }

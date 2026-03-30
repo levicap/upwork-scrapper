@@ -1,0 +1,1125 @@
+[
+  {
+    "headers": {
+      "host": "auto.moezzhioua.com",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+      "content-length": "156780",
+      "accept": "*/*",
+      "accept-encoding": "gzip, deflate, br, zstd",
+      "accept-language": "en-US,en;q=0.9",
+      "content-type": "application/json",
+      "cookie": "rl_page_init_referrer=RudderEncrypt%3AU2FsdGVkX1%2BZvtaVxll33s9HeISsp3o%2BOc5ERN4hkXs%3D",
+      "origin": "chrome-extension://mojpfejnpifdgjjknalhghclnaifnjkg",
+      "priority": "u=1, i",
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "none",
+      "sec-fetch-storage-access": "active",
+      "x-forwarded-for": "87.101.214.94",
+      "x-forwarded-host": "auto.moezzhioua.com",
+      "x-forwarded-port": "443",
+      "x-forwarded-proto": "https",
+      "x-forwarded-server": "6def00742340",
+      "x-real-ip": "87.101.214.94"
+    },
+    "params": {},
+    "query": {},
+    "body": {
+      "passed": true,
+      "payload": {
+        "opening": {
+          "occupation": {
+            "uid": "1110580755107926016",
+            "ontologyId": "upworkOccupation:fullstackdevelopment",
+            "type": [
+              1
+            ],
+            "prefLabel": "Full Stack Development",
+            "altLabel": null,
+            "narrower": null,
+            "broader": [
+              "upworkOccupation:webdevelopmentsubcategory"
+            ],
+            "entityStatus": 3,
+            "narrowerUids": null,
+            "broaderUids": [
+              "531770282584862733"
+            ],
+            "replacedBy": null,
+            "replacedByUid": null,
+            "scopeNote": "Full stack development involves both the front and back-end of a website or application.",
+            "splitInto": null,
+            "splitIntoUids": null,
+            "mergedInto": null,
+            "mergedIntoUid": null,
+            "externalLink": [
+              "http://en.wikipedia.org/wiki/Solution_stack"
+            ],
+            "exactMatch": null,
+            "exactMatchUids": null,
+            "closeMatch": null,
+            "closeMatchUids": null,
+            "relatedMatch": [
+              "upwork:cryptography",
+              "upwork:joomla",
+              "upwork:csharp",
+              "upwork:java",
+              "upwork:sql",
+              "upwork:wordpressplugin",
+              "upwork:vuejs",
+              "upwork:amazonwebservices",
+              "upwork:agilesoftwaredevelopment",
+              "upwork:wordpress",
+              "upwork:rest",
+              "upwork:djangoframework",
+              "upwork:softwaredevelopment",
+              "upwork:bootstrap",
+              "upwork:cplusplus",
+              "upwork:scala",
+              "upwork:cassandra",
+              "upwork:bitcoin",
+              "upwork:softwaredocumentation",
+              "upwork:javascript",
+              "upwork:ethereum",
+              "upwork:angularjs",
+              "upwork:firmware",
+              "upwork:crm",
+              "upwork:databasedesign",
+              "upwork:html",
+              "upwork:softwarequalitymanagement",
+              "upwork:postgresql",
+              "upwork:couchdb",
+              "upwork:aspnetmvc",
+              "upwork:reactjs",
+              "upwork:php",
+              "upwork:groovy",
+              "upwork:meteor",
+              "upwork:mysql",
+              "upwork:python",
+              "upwork:mongodb",
+              "upwork:dotnetframework",
+              "upwork:apachespark",
+              "upwork:rubyonrails",
+              "upwork:jquery",
+              "upwork:nodejs",
+              "upwork:sqlite",
+              "upwork:css",
+              "upwork:softwarearchitecture",
+              "upwork:ruby",
+              "upwork:ajax",
+              "upwork:corda",
+              "upwork:ico",
+              "upwork:aspnet",
+              "upwork:softwaredebugging",
+              "upwork:softwaredesign",
+              "upwork:graphql",
+              "upwork:desktopapplications",
+              "upwork:smartcontracts",
+              "upwork:neo4j"
+            ],
+            "relatedMatchUids": [
+              "1031626728689614848",
+              "1031626751603097600",
+              "996364628025274380",
+              "996364628025274382",
+              "1031626782364123136",
+              "1031626796452790272",
+              "1031626794477273088",
+              "996364628012691471",
+              "1031626711035789312",
+              "1052162208999198724",
+              "1031626774814375936",
+              "1031626732309299200",
+              "1225465958237442048",
+              "1031626720951123968",
+              "996364628025274381",
+              "996364628025274388",
+              "1031626723065053184",
+              "1031626719797690368",
+              "1031626781453959168",
+              "996364628025274383",
+              "1031626736386162688",
+              "1031626712877088768",
+              "1031626738688835584",
+              "1031626728555397120",
+              "1031626729578807296",
+              "1031626745110315008",
+              "1031626781487513600",
+              "996364628000108546",
+              "1031626728098217984",
+              "1031626716547104768",
+              "1031626773660942336",
+              "996364628025274385",
+              "1031626743130603520",
+              "996364628016885763",
+              "996364627995914247",
+              "996364628025274386",
+              "996364627995914245",
+              "1031626732825198592",
+              "996364628000108548",
+              "1031626775930060800",
+              "1031626751737315328",
+              "1031626762999021568",
+              "996364628000108549",
+              "1031626728794472448",
+              "1031626781382656000",
+              "1031626775913283584",
+              "1031626711270670336",
+              "1031626727351631872",
+              "1031626746754482176",
+              "1031626716513550336",
+              "1031626781403627520",
+              "1110580698442878976",
+              "1031626743004774400",
+              "1031626731394940928",
+              "1031626780715761664",
+              "996364627995914248"
+            ],
+            "hasDeliverable": null,
+            "p1keyword": null,
+            "p2keyword": null,
+            "p3keyword": null,
+            "p4keyword": null,
+            "p5keyword": null,
+            "relatedSkill": null,
+            "requires": [
+              "upwork:fullstackdevelopmentlanguages",
+              "upwork:fullstackdevelopmentdeliverablegroup",
+              "upwork:webserversattributegroup",
+              "upwork:Database",
+              "upwork:fullstackdevelopmentattributegroup"
+            ],
+            "taxonomyLevel": [
+              3
+            ],
+            "seeAlso": null,
+            "hasDeliverableUids": null,
+            "requiresUids": [
+              "1204836457510977536",
+              "1110580578754220032",
+              "1204836482861350912",
+              "996364627970748416",
+              "1110580578586447872"
+            ],
+            "published": true,
+            "primaryBroader": "upworkOccupation:webdevelopmentsubcategory",
+            "primaryBroaderUid": "531770282584862733",
+            "supply": 0,
+            "demand": 0,
+            "createdTs": "2019-03-26T16:34:20.267Z",
+            "modifiedTs": "2023-11-17T12:36:22.327Z"
+          },
+          "currentUserInfo": {
+            "owner": false,
+            "freelancerInfo": {
+              "qualificationsMatches": {
+                "totalQualifications": 6,
+                "totalMatches": 6,
+                "matches": [
+                  {
+                    "qualification": 0,
+                    "qualified": true,
+                    "clientPreferred": "all",
+                    "freelancerValue": "IC",
+                    "freelancerValueLabel": "Not Specified",
+                    "clientPreferredLabel": "Any"
+                  },
+                  {
+                    "qualification": 6,
+                    "qualified": true,
+                    "clientPreferred": "0",
+                    "freelancerValue": "0",
+                    "freelancerValueLabel": "0%",
+                    "clientPreferredLabel": "At least 0%"
+                  },
+                  {
+                    "qualification": 4,
+                    "qualified": true,
+                    "clientPreferred": "0",
+                    "freelancerValue": "3",
+                    "freelancerValueLabel": "Fluent",
+                    "clientPreferredLabel": "Any"
+                  },
+                  {
+                    "qualification": 2,
+                    "qualified": true,
+                    "clientPreferred": "0",
+                    "freelancerValue": "0",
+                    "freelancerValueLabel": "0",
+                    "clientPreferredLabel": "At least 0 hours"
+                  },
+                  {
+                    "qualification": 8,
+                    "qualified": true,
+                    "clientPreferred": "ANY",
+                    "freelancerValue": "0.00",
+                    "freelancerValueLabel": "0.00",
+                    "clientPreferredLabel": "Any"
+                  },
+                  {
+                    "qualification": 10,
+                    "qualified": true,
+                    "clientPreferred": "Any",
+                    "freelancerValue": "ar, en, fr",
+                    "freelancerValueLabel": "Arabic, English, French",
+                    "clientPreferredLabel": null
+                  }
+                ]
+              },
+              "applied": null,
+              "hired": null,
+              "contract": null,
+              "profileState": 10,
+              "hourlyRate": {
+                "currencyCode": "USD",
+                "amount": 40
+              },
+              "devProfileCiphertext": "~01b0dbf81af6dba4d3",
+              "application": null,
+              "pendingInvite": null
+            }
+          },
+          "qtAllocations": null,
+          "sponsored": null,
+          "clientSuspended": false,
+          "flSuspended": false,
+          "buyer": null,
+          "isPremium": false,
+          "isTopRated": false,
+          "isHipo": false,
+          "job": null,
+          "opening": {
+            "uid": "1962475876330803682",
+            "title": "n8n workflow and AI agents specialist needed for eCommerce Plateform",
+            "description": "We’re an eCommerce brand looking for someone to help us automate a few key parts of our business using n8n and smart, lightweight AI tools (think GPT-powered tasks, not full-on AI systems).\n\nThis is a short-term gig — probably a couple weeks of focused work — but we’re open to ongoing support if it’s a good fit.\n\nWhat You’ll Work On:\n\nBuild useful, clean n8n workflows to connect tools we already use (Shopify, Notion, Slack, Google Sheets, etc.)\n\nUse agentic AI in practical ways — like auto-tagging products, summarizing customer feedback, or drafting internal updates\n\nKeep the flows clear, reusable, and easy for non-technical teammates to understand\n\nSuggest improvements — we’re open to ideas, not just execution\n\nYou’re a Good Fit If:\n\nYou’ve built with n8n, Zapier, Make, or similar tools\n\nYou know how to use AI tools in real-world, low-hype ways\n\nYou work independently, communicate clearly, and enjoy building stuff that works\n\nYou’re chill, detail-oriented, and not into overcomplicating things\n\nBonus (not required):\n\nExperience in eCommerce or DTC\n\nLight scripting skills (JavaScript or Python)\n\nSome AI prompt engineering know-how\n\nWe care about working with people who are thoughtful, collaborative, and easy to work with — from any background. If this sounds like your kind of project, shoot us a quick message with a few examples of your work.\n\nLet’s keep it simple and make something useful.",
+            "version": 0,
+            "engagementType": 3,
+            "duration": {
+              "uid": "474250516458926083",
+              "rid": 4,
+              "label": "Less than 1 month",
+              "weeks": 3,
+              "ctime": "2014-06-04T17:59:10.123Z",
+              "mtime": "2014-06-04T17:59:10.123Z",
+              "replacedByUid": null
+            },
+            "status": 0,
+            "type": 1,
+            "amount": "150.00",
+            "coverLetterRequired": true,
+            "organizationUid": "1898442517206724044",
+            "companyUid": "1898442517206724044",
+            "access": 0,
+            "contractorTier": 2,
+            "freelancersToHire": 1,
+            "ctime": "2025-09-01T11:21:24.827Z",
+            "mtime": "2025-09-01T11:21:24.827Z",
+            "hidden": false,
+            "categoryUid": "531770282584862733",
+            "groupUid": "531770282580668418",
+            "createdByUid": "1360421450473189376",
+            "ciphertext": "01ruAXXjeDGZjv1wz6lADdJMWtXb*EkZcEwdAMYFr3peU=",
+            "endDate": null,
+            "startDate": null,
+            "ghostPost": false,
+            "siteSource": "desktop_rjp",
+            "maxAmount": null,
+            "keepOpenOnHire": false,
+            "draftOpeningUid": "1961411944889854838",
+            "freelancerMilestonesAllowed": true,
+            "createdByFirstName": null,
+            "createdByLastName": null,
+            "companyName": null,
+            "publishTime": "2025-09-01T11:21:26.507Z",
+            "sourcingTime": null,
+            "sourcingUpdateForbidden": false,
+            "sourcingUpdateCount": 0,
+            "premium": false,
+            "legacyCiphertext": "~021962475876330803682",
+            "hideBudget": false,
+            "notSureFreelancersToHire": false,
+            "notSureProjectDuration": false,
+            "notSureExperienceLevel": false,
+            "notSureLocationPreference": false,
+            "reasonRid": null,
+            "legacyRid": 1021528725,
+            "hourlyBudgetType": 2,
+            "hourlyBudgetMin": null,
+            "hourlyBudgetMax": null,
+            "weeklyRetainerBudget": null,
+            "deletedReason": null,
+            "autoReviewStatus": 0,
+            "autoReviewTs": "2025-09-01T11:21:26.505Z",
+            "filledDate": null,
+            "changedByUid": "1360421450473189376",
+            "manualReviewStatus": null,
+            "lastOboAgentUserUID": null,
+            "lastOboAgentActionTs": null,
+            "closeTime": null,
+            "job": {
+              "info": {
+                "type": 1,
+                "title": "n8n workflow and AI agents specialist needed for eCommerce Plateform",
+                "ciphertext": "~021962475876330803682",
+                "access": 4,
+                "recno": null,
+                "createdOn": "2025-09-01T11:21:24.827Z",
+                "isPtcPrivate": false,
+                "uid": "1962475876330803682",
+                "premium": false,
+                "hideBudget": false,
+                "notSureFreelancersToHire": false,
+                "notSureProjectDuration": false,
+                "notSureExperienceLevel": false,
+                "notSureLocationPreference": false
+              },
+              "description": "We’re an eCommerce brand looking for someone to help us automate a few key parts of our business using n8n and smart, lightweight AI tools (think GPT-powered tasks, not full-on AI systems).\n\nThis is a short-term gig — probably a couple weeks of focused work — but we’re open to ongoing support if it’s a good fit.\n\nWhat You’ll Work On:\n\nBuild useful, clean n8n workflows to connect tools we already use (Shopify, Notion, Slack, Google Sheets, etc.)\n\nUse agentic AI in practical ways — like auto-tagging products, summarizing customer feedback, or drafting internal updates\n\nKeep the flows clear, reusable, and easy for non-technical teammates to understand\n\nSuggest improvements — we’re open to ideas, not just execution\n\nYou’re a Good Fit If:\n\nYou’ve built with n8n, Zapier, Make, or similar tools\n\nYou know how to use AI tools in real-world, low-hype ways\n\nYou work independently, communicate clearly, and enjoy building stuff that works\n\nYou’re chill, detail-oriented, and not into overcomplicating things\n\nBonus (not required):\n\nExperience in eCommerce or DTC\n\nLight scripting skills (JavaScript or Python)\n\nSome AI prompt engineering know-how\n\nWe care about working with people who are thoughtful, collaborative, and easy to work with — from any background. If this sounds like your kind of project, shoot us a quick message with a few examples of your work.\n\nLet’s keep it simple and make something useful.",
+              "status": 1,
+              "postedOn": "2025-09-01T11:21:24.827Z",
+              "startDate": null,
+              "deliveryDate": null,
+              "workload": null,
+              "companyRecno": 1015968394,
+              "duration": "Less than 1 month",
+              "budget": {
+                "currencyCode": "USD",
+                "amount": 150
+              },
+              "visibility": 4,
+              "clientActivity": {
+                "lastBuyerActivity": null,
+                "numberOfPositionsToHire": 1,
+                "totalApplicants": null,
+                "totalInvitedToInterview": null,
+                "totalHired": null,
+                "unansweredInvites": null,
+                "invitationsSent": null
+              },
+              "contractorTier": 3,
+              "segmentationData": [
+                {
+                  "name": "Employment",
+                  "value": "EMPLOYMENT_PROJECT",
+                  "label": "One-time project",
+                  "type": "EMPLOYMENT",
+                  "sortOrder": 0,
+                  "typeUid": "535792587707281410",
+                  "customValue": null,
+                  "skill": null
+                }
+              ],
+              "categoryGroup": {
+                "name": "Web, Mobile & Software Dev",
+                "urlSlug": "web-mobile-software-dev"
+              },
+              "category": {
+                "name": "Web Development",
+                "urlSlug": "web-development"
+              },
+              "maxBudget": null,
+              "attachments": null,
+              "openingUid": "1962475876330803682",
+              "sourcingTime": null,
+              "publishTime": "2025-09-01T11:21:26.507Z",
+              "durationLabel": null,
+              "durationIdV3": null,
+              "extendedBudgetInfo": {
+                "hourlyBudgetType": null,
+                "hourlyBudgetMin": null,
+                "hourlyBudgetMax": null
+              },
+              "engagementDuration": {
+                "uid": "474250516458926083",
+                "rid": 4,
+                "label": "Less than 1 month",
+                "weeks": 3,
+                "ctime": "2014-06-04T17:59:10.123Z",
+                "mtime": "2014-06-04T17:59:10.123Z",
+                "replacedByUid": null
+              },
+              "sandsData": {
+                "occupation": {
+                  "uid": "1110580755107926016",
+                  "freeText": null,
+                  "ontologyId": "upworkOccupation:fullstackdevelopment",
+                  "prefLabel": "Full Stack Development"
+                },
+                "ontologySkills": [
+                  {
+                    "attributeUid": "1691099314245873664",
+                    "attributeGroupUid": "1110580578754220032",
+                    "freeText": null,
+                    "ontologyId": "kg:54-00787",
+                    "prefLabel": "ChatGPT API Integration"
+                  }
+                ],
+                "additionalSkills": [
+                  {
+                    "attributeUid": "1733104400597401607",
+                    "attributeGroupUid": null,
+                    "freeText": null,
+                    "ontologyId": "kg:54-00864",
+                    "prefLabel": "n8n"
+                  },
+                  {
+                    "attributeUid": null,
+                    "attributeGroupUid": null,
+                    "freeText": "ai agents",
+                    "ontologyId": null,
+                    "prefLabel": null
+                  },
+                  {
+                    "attributeUid": null,
+                    "attributeGroupUid": null,
+                    "freeText": "ai angents",
+                    "ontologyId": null,
+                    "prefLabel": null
+                  },
+                  {
+                    "attributeUid": "1031626717876699136",
+                    "attributeGroupUid": null,
+                    "freeText": null,
+                    "ontologyId": "upwork:automation",
+                    "prefLabel": "Automation"
+                  }
+                ],
+                "occupations": [
+                  {
+                    "uid": "1110580755107926016",
+                    "freeText": null,
+                    "ontologyId": "upworkOccupation:fullstackdevelopment",
+                    "prefLabel": "Full Stack Development"
+                  }
+                ]
+              },
+              "annotations": {
+                "tags": [
+                  "contractToHireSet",
+                  "searchable",
+                  "C2HJobsOptInEducation"
+                ],
+                "customFields": {
+                  "siteSource": "desktop_rjp",
+                  "publishTime": "2025-09-01T11:21:26.507Z",
+                  "sourcingUpdateCount": "0",
+                  "sourcingUpdateForbidden": "false",
+                  "type": "RJP",
+                  "optInDescriptionAIv2": "no",
+                  "browser": "Chrome",
+                  "device": "Windows",
+                  "flowType": "RJP"
+                }
+              }
+            }
+          },
+          "qualifications": {
+            "openingUid": "1962475876330803682",
+            "englishSkill": 0,
+            "oDeskHours": null,
+            "testRid": null,
+            "locationRegionRid": null,
+            "freelancerType": 0,
+            "ctime": "2025-09-01T11:21:24.731Z",
+            "mtime": "2025-09-01T11:21:24.731Z",
+            "jobSuccessScore": null,
+            "englishProficiency": 0,
+            "risingTalent": null,
+            "countries": null,
+            "locationCheckRequired": null,
+            "regions": null,
+            "states": null,
+            "timezones": null,
+            "earnings": 0,
+            "localMarket": false,
+            "onSiteType": null,
+            "locations": null,
+            "localDescription": null,
+            "localFlexibilityDescription": null,
+            "languages": null
+          },
+          "questions": {
+            "questions": [
+              {
+                "uid": "1962475805164409454",
+                "question": "Include a link to your GitHub profile and/or website",
+                "personUid": "1360421450473189376",
+                "organizationUid": "1898442517206724044",
+                "ctime": "2025-09-01T11:21:24.735Z",
+                "mtime": "2025-09-01T11:21:24.735Z",
+                "type": null
+              },
+              {
+                "uid": "1962475805168603758",
+                "question": "Please list any certifications related to this project",
+                "personUid": "1360421450473189376",
+                "organizationUid": "1898442517206724044",
+                "ctime": "2025-09-01T11:21:24.735Z",
+                "mtime": "2025-09-01T11:21:24.735Z",
+                "type": null
+              }
+            ]
+          },
+          "segmentationData": {
+            "segmentationData": [
+              {
+                "segmentationValueUid": "535794351185620993",
+                "customValue": null,
+                "ctime": "2025-09-01T11:21:24.733Z",
+                "mtime": "2025-09-01T11:21:24.733Z",
+                "segmentationValue": {
+                  "uid": "535794351185620993",
+                  "rid": 1867,
+                  "type": {
+                    "uid": "535792587707281410",
+                    "name": "Employment",
+                    "ctime": "2014-06-04T18:24:59.000Z",
+                    "mtime": "2014-06-04T18:24:59.000Z",
+                    "rname": "EMPLOYMENT"
+                  },
+                  "label": "One-time project",
+                  "rname": "EMPLOYMENT_PROJECT",
+                  "skillUid": null,
+                  "sortOrder": 0,
+                  "ctime": "2014-06-04T18:24:59.000Z",
+                  "mtime": "2014-06-04T18:24:59.000Z",
+                  "skill": null
+                }
+              }
+            ]
+          },
+          "qualificationsLoaded": true,
+          "questionsLoaded": true,
+          "segmentationDataLoaded": true,
+          "openingExtra": {
+            "uid": "1962475876330803682",
+            "organizationUid": "1898442517206724044",
+            "companyUid": "1898442517206724044",
+            "directHire": false,
+            "invitePost": false,
+            "clientTlv": null
+          },
+          "openingExtraLoaded": true,
+          "attachments": {
+            "attachments": []
+          },
+          "attachmentsLoaded": true,
+          "createdBy": null,
+          "organization": {
+            "uid": "1898442517206724044",
+            "parentUid": null,
+            "legacyId": "mtg5odq0mjuxnjq0odaymjixmw",
+            "rid": "1015968394",
+            "legacyParentRid": null,
+            "legacyType": 1,
+            "name": "",
+            "photoUrl": null,
+            "type": 1,
+            "contactRid": null,
+            "creationDate": "2025-03-08T18:35:42.115Z",
+            "active": true,
+            "hidden": false,
+            "description": "",
+            "contact": [],
+            "topLevelOrgUid": "1898442517206724044",
+            "timezoneName": "Asia/Karachi"
+          },
+          "createdByLoaded": true,
+          "organizationLoaded": true,
+          "ptcInfo": null,
+          "ptcInfoLoaded": true,
+          "category": {
+            "uid": "531770282584862733",
+            "name": "Web Development",
+            "slug": "sc-web-development"
+          },
+          "group": {
+            "uid": "531770282580668418",
+            "name": "Web, Mobile & Software Dev",
+            "categories": null,
+            "slug": null
+          },
+          "categoryLoaded": true,
+          "groupLoaded": true,
+          "sandsJobPost": {
+            "jobPostUid": "1962475876330803682",
+            "occupationUid": "1110580755107926016",
+            "skills": [
+              {
+                "parentSkillUid": "1110580578754220032",
+                "skillUid": "1691099314245873664",
+                "freetext": null,
+                "boolAnswer": false,
+                "isLegacyConvertedSkill": false
+              }
+            ],
+            "status": 2,
+            "freetextOccupation": null,
+            "tags": null,
+            "additionalSkills": [
+              {
+                "skillUid": "1733104400597401607",
+                "freeText": null,
+                "isLegacyConvertedSkill": false
+              },
+              {
+                "skillUid": null,
+                "freeText": "ai agents",
+                "isLegacyConvertedSkill": false
+              },
+              {
+                "skillUid": null,
+                "freeText": "ai angents",
+                "isLegacyConvertedSkill": false
+              },
+              {
+                "skillUid": "1031626717876699136",
+                "freeText": null,
+                "isLegacyConvertedSkill": false
+              }
+            ]
+          },
+          "sandsJobPostLoaded": true,
+          "annotations": null,
+          "annotationsLoaded": false
+        },
+        "jobDetails": {
+          "context": {
+            "MIN_RATE": 5,
+            "HOURS_PER_WEEK": 40,
+            "MAX_WEEKLY_RATE": 9999,
+            "DEFAULT_MILESTONES_MAX": 1000000,
+            "engagementDurationsList": [
+              {
+                "uid": "474250516458926080",
+                "rid": 1,
+                "label": "More than 6 months",
+                "weeks": 52,
+                "ctime": "2014-06-04T17:59:10.123Z",
+                "mtime": "2014-06-04T17:59:10.123Z",
+                "replacedByUid": null
+              },
+              {
+                "uid": "474250516458926081",
+                "rid": 2,
+                "label": "3 to 6 months",
+                "weeks": 18,
+                "ctime": "2014-06-04T17:59:10.123Z",
+                "mtime": "2014-06-04T17:59:10.123Z",
+                "replacedByUid": null
+              },
+              {
+                "uid": "474250516458926082",
+                "rid": 3,
+                "label": "1 to 3 months",
+                "weeks": 9,
+                "ctime": "2014-06-04T17:59:10.123Z",
+                "mtime": "2014-06-04T17:59:10.123Z",
+                "replacedByUid": null
+              },
+              {
+                "uid": "474250516458926083",
+                "rid": 4,
+                "label": "Less than 1 month",
+                "weeks": 3,
+                "ctime": "2014-06-04T17:59:10.123Z",
+                "mtime": "2014-06-04T17:59:10.123Z",
+                "replacedByUid": null
+              }
+            ],
+            "qt": {
+              "TRTN2800_EducationalAwareness": "",
+              "TRTN970_ProposalTemplates": "",
+              "UPL406TalentProposalConsultant": "Treatment",
+              "TONB3345_ShowHighlightedSectionByPerson": "Treatment"
+            },
+            "ff": {
+              "TRTN2800EducationalAwareness": false,
+              "TRTN970ProposalTemplates": false,
+              "UPL49EnableTalentProposalGeneration": true,
+              "TONB3345ShowHighlightedSection": true
+            },
+            "mode": "ic",
+            "ENTERPRISE_COMPLIANCE_MILESTONES_TOTAL_MAX": 5000000,
+            "ENTERPRISE_COMPLIANCE_MILESTONES_MAX": 250000,
+            "phoneVerificationNeeded": false,
+            "idVerificationNeeded": false,
+            "idvRequiredByOpening": false,
+            "upgradeSubscriptionLink": "/nx/plans/membership/change-plan?returnUrl=eyJzdWNjZXNzIjoiXC9qb2JzXC9%2BMDIxOTYyNDc1ODc2MzMwODAzNjgyP2Zyb209bXNwbHVzIiwiYmFjayI6Ilwvam9ic1wvfjAyMTk2MjQ3NTg3NjMzMDgwMzY4MiIsInVubG9ja0FnZW5jeSI6MSwiam9iT3BlbmluZ3NJZCI6MX0%3D",
+            "isEnterpriseClient": false
+          },
+          "jobDetails": {
+            "opening": {
+              "job": {
+                "info": {
+                  "type": 1,
+                  "title": "n8n workflow and AI agents specialist needed for eCommerce Plateform",
+                  "ciphertext": "~021962475876330803682",
+                  "access": 4,
+                  "recno": null,
+                  "createdOn": "2025-09-01T11:21:24.827Z",
+                  "isPtcPrivate": false,
+                  "uid": "1962475876330803682",
+                  "premium": false,
+                  "hideBudget": false,
+                  "notSureFreelancersToHire": false,
+                  "notSureProjectDuration": false,
+                  "notSureExperienceLevel": false,
+                  "notSureLocationPreference": false
+                },
+                "description": "We’re an eCommerce brand looking for someone to help us automate a few key parts of our business using n8n and smart, lightweight AI tools (think GPT-powered tasks, not full-on AI systems).\n\nThis is a short-term gig — probably a couple weeks of focused work — but we’re open to ongoing support if it’s a good fit.\n\nWhat You’ll Work On:\n\nBuild useful, clean n8n workflows to connect tools we already use (Shopify, Notion, Slack, Google Sheets, etc.)\n\nUse agentic AI in practical ways — like auto-tagging products, summarizing customer feedback, or drafting internal updates\n\nKeep the flows clear, reusable, and easy for non-technical teammates to understand\n\nSuggest improvements — we’re open to ideas, not just execution\n\nYou’re a Good Fit If:\n\nYou’ve built with n8n, Zapier, Make, or similar tools\n\nYou know how to use AI tools in real-world, low-hype ways\n\nYou work independently, communicate clearly, and enjoy building stuff that works\n\nYou’re chill, detail-oriented, and not into overcomplicating things\n\nBonus (not required):\n\nExperience in eCommerce or DTC\n\nLight scripting skills (JavaScript or Python)\n\nSome AI prompt engineering know-how\n\nWe care about working with people who are thoughtful, collaborative, and easy to work with — from any background. If this sounds like your kind of project, shoot us a quick message with a few examples of your work.\n\nLet’s keep it simple and make something useful.",
+                "status": 1,
+                "postedOn": "2025-09-01T11:21:24.827Z",
+                "startDate": null,
+                "deliveryDate": null,
+                "workload": null,
+                "companyRecno": 1015968394,
+                "duration": "Less than 1 month",
+                "budget": {
+                  "currencyCode": "USD",
+                  "amount": 150
+                },
+                "visibility": 4,
+                "clientActivity": {
+                  "lastBuyerActivity": null,
+                  "numberOfPositionsToHire": 1,
+                  "totalApplicants": null,
+                  "totalInvitedToInterview": null,
+                  "totalHired": null,
+                  "unansweredInvites": null,
+                  "invitationsSent": null
+                },
+                "contractorTier": 3,
+                "segmentationData": [
+                  {
+                    "name": "Employment",
+                    "value": "EMPLOYMENT_PROJECT",
+                    "label": "One-time project",
+                    "type": "EMPLOYMENT",
+                    "sortOrder": 0,
+                    "typeUid": "535792587707281410",
+                    "customValue": null,
+                    "skill": null
+                  }
+                ],
+                "categoryGroup": {
+                  "name": "Web, Mobile & Software Dev",
+                  "urlSlug": "web-mobile-software-dev"
+                },
+                "category": {
+                  "name": "Web Development",
+                  "urlSlug": "web-development"
+                },
+                "maxBudget": null,
+                "attachments": null,
+                "openingUid": "1962475876330803682",
+                "sourcingTime": null,
+                "publishTime": "2025-09-01T11:21:26.507Z",
+                "durationLabel": null,
+                "durationIdV3": null,
+                "extendedBudgetInfo": {
+                  "hourlyBudgetType": null,
+                  "hourlyBudgetMin": null,
+                  "hourlyBudgetMax": null
+                },
+                "engagementDuration": {
+                  "uid": "474250516458926083",
+                  "rid": 4,
+                  "label": "Less than 1 month",
+                  "weeks": 3,
+                  "ctime": "2014-06-04T17:59:10.123Z",
+                  "mtime": "2014-06-04T17:59:10.123Z",
+                  "replacedByUid": null
+                },
+                "sandsData": {
+                  "occupation": {
+                    "uid": "1110580755107926016",
+                    "freeText": null,
+                    "ontologyId": "upworkOccupation:fullstackdevelopment",
+                    "prefLabel": "Full Stack Development"
+                  },
+                  "ontologySkills": [
+                    {
+                      "attributeUid": "1691099314245873664",
+                      "attributeGroupUid": "1110580578754220032",
+                      "freeText": null,
+                      "ontologyId": "kg:54-00787",
+                      "prefLabel": "ChatGPT API Integration"
+                    }
+                  ],
+                  "additionalSkills": [
+                    {
+                      "attributeUid": "1733104400597401607",
+                      "attributeGroupUid": null,
+                      "freeText": null,
+                      "ontologyId": "kg:54-00864",
+                      "prefLabel": "n8n"
+                    },
+                    {
+                      "attributeUid": null,
+                      "attributeGroupUid": null,
+                      "freeText": "ai agents",
+                      "ontologyId": null,
+                      "prefLabel": null
+                    },
+                    {
+                      "attributeUid": null,
+                      "attributeGroupUid": null,
+                      "freeText": "ai angents",
+                      "ontologyId": null,
+                      "prefLabel": null
+                    },
+                    {
+                      "attributeUid": "1031626717876699136",
+                      "attributeGroupUid": null,
+                      "freeText": null,
+                      "ontologyId": "upwork:automation",
+                      "prefLabel": "Automation"
+                    }
+                  ],
+                  "occupations": [
+                    {
+                      "uid": "1110580755107926016",
+                      "freeText": null,
+                      "ontologyId": "upworkOccupation:fullstackdevelopment",
+                      "prefLabel": "Full Stack Development"
+                    }
+                  ]
+                },
+                "annotations": {
+                  "tags": [
+                    "contractToHireSet",
+                    "searchable",
+                    "C2HJobsOptInEducation"
+                  ],
+                  "customFields": {
+                    "siteSource": "desktop_rjp",
+                    "publishTime": "2025-09-01T11:21:26.507Z",
+                    "sourcingUpdateCount": "0",
+                    "sourcingUpdateForbidden": "false",
+                    "type": "RJP",
+                    "optInDescriptionAIv2": "no",
+                    "browser": "Chrome",
+                    "device": "Windows",
+                    "flowType": "RJP"
+                  }
+                }
+              },
+              "qualifications": {
+                "type": 0,
+                "location": null,
+                "minOdeskHours": 0,
+                "groupRecno": null,
+                "shouldHavePortfolio": false,
+                "tests": null,
+                "minHoursWeek": null,
+                "group": null,
+                "prefEnglishSkill": 0,
+                "minJobSuccessScore": 0,
+                "risingTalent": false,
+                "locationCheckRequired": false,
+                "countries": null,
+                "regions": null,
+                "states": null,
+                "timezones": null,
+                "localMarket": false,
+                "onSiteType": null,
+                "locations": null,
+                "localDescription": null,
+                "localFlexibilityDescription": null,
+                "earnings": null,
+                "languages": null
+              },
+              "questions": [
+                {
+                  "position": 0,
+                  "question": "Include a link to your GitHub profile and/or website"
+                },
+                {
+                  "position": 1,
+                  "question": "Please list any certifications related to this project"
+                }
+              ],
+              "isJobClosedByCss": null
+            },
+            "buyer": {
+              "info": {
+                "company": {
+                  "name": "Eeastern Codes",
+                  "id": "mtg5odq0mjuxnjq0odaymjixmw",
+                  "description": null,
+                  "summary": null,
+                  "url": null,
+                  "isCompanyVisibleInProfile": false,
+                  "contractDate": "2025-03-08T00:00:00.000Z",
+                  "isEDCReplicated": false,
+                  "companyRid": null,
+                  "companyUid": "1898442517206724044",
+                  "profile": {
+                    "size": null,
+                    "industry": null,
+                    "visible": false,
+                    "l3Occupations": []
+                  }
+                },
+                "location": {
+                  "country": "Pakistan",
+                  "city": "Lahore",
+                  "state": "PB",
+                  "countryTimezone": "Asia/Karachi (UTC+05:00)",
+                  "worldRegion": null,
+                  "offsetFromUtcMillis": 18000000
+                },
+                "jobs": {
+                  "postedCount": 2,
+                  "filledCount": 0,
+                  "openCount": 1,
+                  "openJobs": []
+                },
+                "stats": {
+                  "feedbackCount": 0,
+                  "hoursCount": 0,
+                  "totalCharges": null,
+                  "totalAssignments": 0,
+                  "activeAssignmentsCount": 0,
+                  "score": 0,
+                  "totalJobsWithHires": 0
+                },
+                "logo": null,
+                "avgHourlyJobsRate": null
+              },
+              "workHistory": [],
+              "cssTier": 0,
+              "isPaymentMethodVerified": true,
+              "isEnterprise": null
+            },
+            "similarJobs": [],
+            "currentUserInfo": {
+              "owner": false,
+              "freelancerInfo": {
+                "qualificationsMatches": {
+                  "totalQualifications": 6,
+                  "totalMatches": 6,
+                  "matches": [
+                    {
+                      "qualification": 0,
+                      "qualified": true,
+                      "clientPreferred": "all",
+                      "freelancerValue": "IC",
+                      "freelancerValueLabel": "Not Specified",
+                      "clientPreferredLabel": "Any"
+                    },
+                    {
+                      "qualification": 6,
+                      "qualified": true,
+                      "clientPreferred": "0",
+                      "freelancerValue": "0",
+                      "freelancerValueLabel": "0%",
+                      "clientPreferredLabel": "At least 0%"
+                    },
+                    {
+                      "qualification": 4,
+                      "qualified": true,
+                      "clientPreferred": "0",
+                      "freelancerValue": "3",
+                      "freelancerValueLabel": "Fluent",
+                      "clientPreferredLabel": "Any"
+                    },
+                    {
+                      "qualification": 2,
+                      "qualified": true,
+                      "clientPreferred": "0",
+                      "freelancerValue": "0",
+                      "freelancerValueLabel": "0",
+                      "clientPreferredLabel": "At least 0 hours"
+                    },
+                    {
+                      "qualification": 8,
+                      "qualified": true,
+                      "clientPreferred": "ANY",
+                      "freelancerValue": "0.00",
+                      "freelancerValueLabel": "0.00",
+                      "clientPreferredLabel": "Any"
+                    },
+                    {
+                      "qualification": 10,
+                      "qualified": true,
+                      "clientPreferred": "Any",
+                      "freelancerValue": "ar, en, fr",
+                      "freelancerValueLabel": "Arabic, English, French",
+                      "clientPreferredLabel": null
+                    }
+                  ]
+                },
+                "applied": null,
+                "hired": null,
+                "contract": null,
+                "profileState": 10,
+                "hourlyRate": {
+                  "currencyCode": "USD",
+                  "amount": 40
+                },
+                "devProfileCiphertext": "~01b0dbf81af6dba4d3",
+                "application": null,
+                "pendingInvite": null
+              }
+            },
+            "diagnosticInfo": {
+              "failedServiceCalls": null
+            }
+          }
+        },
+        "teams": {
+          "combined": [],
+          "freelancer": {
+            "uid": "1936807751921138770",
+            "person": {
+              "uid": "1936807751921138768",
+              "legacyId": "ac9360ac55bb6be1",
+              "rid": "1085312920",
+              "personName": {
+                "lastName": "Mulan",
+                "firstName": "Henry"
+              },
+              "photoUrl": "https://www.upwork.com/profile-portraits/c1su83hrC79aOyzrvtllD8K0-Q_zxMYUSFxcKn2jZxYPAjf9k6prggNc_BfComqjyF",
+              "creationDate": "2025-06-22T15:25:26.862Z",
+              "isProvider": null,
+              "updatedOn": "2025-06-22T15:30:50.956Z",
+              "active": true,
+              "dateOfBirth": null
+            },
+            "organization": {
+              "name": "Henry Mulan",
+              "uid": "1936807751921138769",
+              "parentUid": null,
+              "legacyId": null,
+              "rid": null,
+              "legacyParentRid": null,
+              "legacyType": 2,
+              "photoUrl": null,
+              "type": 2,
+              "contactRid": null,
+              "active": true,
+              "hidden": false,
+              "description": null,
+              "topLevelOrgUid": "1936807751921138769",
+              "timezoneName": "Africa/Tunis"
+            },
+            "activationStatus": 1,
+            "owner": true,
+            "invitationRid": null,
+            "contractRid": null,
+            "personUid": "1936807751921138768",
+            "orgUid": "1936807751921138769",
+            "eac": null,
+            "affiliateContractor": null,
+            "staffType": 3,
+            "colleague": true,
+            "isDefault": false
+          }
+        }
+      }
+    },
+    "webhookUrl": "https://auto.moezzhioua.com/webhook/upwork-automation",
+    "executionMode": "production"
+  }
+]

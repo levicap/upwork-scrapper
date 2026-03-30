@@ -1,0 +1,219 @@
+[
+  {
+    "companyId": "1963223307415459949",
+    "jobTitle": "Menu responsive",
+    "results": [
+      {
+        "alias": "company-direct",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 9,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (MissingFieldArgument@[company]) : Missing field argument 'id'"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 17,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (UnknownArgument@[company]) : Unknown field argument 'companyId'"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 35,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/id]) : Field 'id' in type 'CompanyInfo' is undefined"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 38,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/name]) : Field 'name' in type 'CompanyInfo' is undefined"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 43,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[company/profile]) : Field 'profile' in type 'CompanyInfo' is undefined"
+            }
+          ]
+        },
+        "query": "query CompanyDirect($id: String!) {\n        company(companyId: $id) { id name profile { industry size } }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "getCompanyProfile",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 9,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[companyProfile]) : Field 'companyProfile' in type 'Query' is undefined"
+            }
+          ]
+        },
+        "query": "query GetCompanyProfile($orgId: String!) {\n        companyProfile(organizationId: $orgId) { name industry size }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "buyerOrganization",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 9,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (FieldUndefined@[buyerOrganization]) : Field 'buyerOrganization' in type 'Query' is undefined"
+            }
+          ]
+        },
+        "query": "query BuyerOrg($id: String!) {\n        buyerOrganization(organizationId: $id) { name profile { industry size } location { city country } }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "orgDetails",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 22,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (UnknownArgument@[organization]) : Unknown field argument 'id'"
+            }
+          ]
+        },
+        "query": "query OrgDetails($id: String!) {\n        organization(id: $id) { id type legacyType name }\n      }",
+        "status": 200
+      },
+      {
+        "alias": "introspect-BuyerInfo",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ExecutionAborted"
+              },
+              "message": "Introspection query is disabled for internal clients"
+            }
+          ]
+        },
+        "query": "{ __type(name: \"BuyerInfo\") { fields { name type { name kind ofType { name } } } } }",
+        "status": 200
+      },
+      {
+        "alias": "introspect-CompanyInfo",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ExecutionAborted"
+              },
+              "message": "Introspection query is disabled for internal clients"
+            }
+          ]
+        },
+        "query": "{ __type(name: \"CompanyInfo\") { fields { name } } }",
+        "status": 200
+      },
+      {
+        "alias": "introspect-Organization",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ExecutionAborted"
+              },
+              "message": "Introspection query is disabled for internal clients"
+            }
+          ]
+        },
+        "query": "{ __type(name: \"Organization\") { fields { name } } }",
+        "status": 200
+      },
+      {
+        "alias": "jobAuthExtended",
+        "data": {
+          "errors": [
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 9,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (MissingFieldArgument@[jobAuthDetails]) : Missing field argument 'id'"
+            },
+            {
+              "extensions": {
+                "classification": "ValidationError"
+              },
+              "locations": [
+                {
+                  "column": 24,
+                  "line": 2
+                }
+              ],
+              "message": "Validation error (UnknownArgument@[jobAuthDetails]) : Unknown field argument 'jobCiphertext'"
+            }
+          ]
+        },
+        "query": "query JobAuthExt($cipher: String!) {\n        jobAuthDetails(jobCiphertext: $cipher) {\n          buyer {\n            info {\n              company { companyId name profile { industry size } }\n              location { city country }\n              stats { score totalAssignments totalCharges { amount } }\n            }\n          }\n        }\n      }",
+        "status": 200
+      }
+    ],
+    "runAt": "2026-03-21T13:08:54.558Z"
+  }
+]
