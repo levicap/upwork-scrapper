@@ -1,324 +1,19 @@
 'use strict';
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let allRequests = [];
-let selectedRequest = null;
-let activeTab = 'overview';
+// -- State --------------------------------------------------------------------
+let allJobs        = [];
+let searchJobs     = [];
+let activePanel    = 'jobs';
+let drawerJob      = null;
+let drawerTab      = 'overview';
+let searchDrawerJob = null;
+let searchDrawerTab = 'overview';
+let cfgInited      = false;
+let scrapeRunThisSession = false; // true once Run Scrape is clicked this popup session
 
-// Patterns that mark a request as an "API call"
-const API_PATTERNS = [
-  'upwork.com/api/',
-  'upwork.com/graphql',
-  'upwork.com/ab/',
-  'api.upwork.com',
-  '/search/jobs',
-  '/talent/',
-  '/freelancers/',
-  '/jobs/'
-];
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-  loadRequests();
-  checkStatus();
-
-  document.getElementById('btn-refresh').addEventListener('click', loadRequests);
-  document.getElementById('btn-clear').addEventListener('click', handleClear);
-  document.getElementById('btn-download').addEventListener('click', handleDownload);
-  document.getElementById('btn-attach').addEventListener('click', handleAttach);
-  document.getElementById('filter').addEventListener('input', render);
-  document.getElementById('chk-api-only').addEventListener('change', render);
-  document.getElementById('detail-close').addEventListener('click', closeDetail);
-
-  // Tab buttons in detail panel
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      activeTab = btn.dataset.tab;
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      if (selectedRequest) showDetailTab(selectedRequest, activeTab);
-    });
-  });
-
-  document.getElementById('detail-copy').addEventListener('click', () => {
-    const text = document.getElementById('detail-content').textContent;
-    navigator.clipboard.writeText(text).then(() => showToast('Copied!'));
-  });
-
-  // ── Top-level panel tabs ─────────────────────────────────────────────────
-  document.querySelectorAll('.top-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const panel = btn.dataset.panel;
-      document.querySelectorAll('.top-tab').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('panel-capture').classList.toggle('hidden', panel !== 'capture');
-      document.getElementById('panel-lookup').classList.toggle('hidden', panel !== 'lookup');
-      document.getElementById('panel-job-details').classList.toggle('hidden', panel !== 'job-details');
-      document.getElementById('panel-config').classList.toggle('hidden', panel !== 'config');
-      if (panel === 'lookup') initLookupPanel();
-      if (panel === 'job-details') jdLoadJobs();
-      if (panel === 'config') initConfigPanel();
-    });
-  });
-
-  // ── Job details panel (init once) ────────────────────────────────────────
-  initJobDetailsPanel();
-  // ── Lookup panel controls ────────────────────────────────────────────────
-  document.getElementById('btn-lookup-refresh').addEventListener('click', loadDetectedCompanies);
-  document.getElementById('btn-lookup-run-all').addEventListener('click', handleRunAll);
-  document.getElementById('btn-lookup-clear').addEventListener('click', handleLookupClear);
-  document.getElementById('btn-lookup-download').addEventListener('click', handleLookupDownload);
-  document.getElementById('lookup-result-close').addEventListener('click', () => {
-    document.getElementById('lookup-result-panel').classList.add('hidden');
-  });
-  document.getElementById('lookup-result-copy').addEventListener('click', () => {
-    const text = document.getElementById('lookup-result-content').textContent;
-    navigator.clipboard.writeText(text).then(() => showToast('Copied!'));
-  });
-});
-
-// ── Data loading ──────────────────────────────────────────────────────────────
-function loadRequests() {
-  chrome.runtime.sendMessage({ action: 'getRequests' }, (res) => {
-    if (res) {
-      allRequests = res.requests || [];
-      updateStats(allRequests.length, res.totalCount || 0);
-      render();
-    }
-  });
-}
-
-function checkStatus() {
-  chrome.runtime.sendMessage({ action: 'getStatus' }, (res) => {
-    if (!res) return;
-    const el = document.getElementById('status');
-    const n = res.attachedTabsCount;
-    if (res.isUpwork && res.isAttached) {
-      el.textContent = `● Active (${n} tab${n !== 1 ? 's' : ''})`;
-      el.className = 'status active';
-    } else if (res.isUpwork) {
-      el.textContent = '● On Upwork – not attached';
-      el.className = 'status partial';
-    } else {
-      el.textContent = n > 0
-        ? `● Monitoring ${n} Upwork tab${n !== 1 ? 's' : ''}`
-        : '● Not on Upwork';
-      el.className = n > 0 ? 'status active' : 'status inactive';
-    }
-  });
-}
-
-// ── Filtering ─────────────────────────────────────────────────────────────────
-function isApiRequest(req) {
-  return API_PATTERNS.some(p => req.url.includes(p));
-}
-
-function applyFilters(requests) {
-  const filterText = document.getElementById('filter').value.trim().toLowerCase();
-  const apiOnly = document.getElementById('chk-api-only').checked;
-
-  return requests.filter(req => {
-    if (apiOnly && !isApiRequest(req)) return false;
-    if (filterText) {
-      const haystack = (req.url + ' ' + req.method + ' ' + (req.status || '')).toLowerCase();
-      if (!haystack.includes(filterText)) return false;
-    }
-    return true;
-  });
-}
-
-// ── Rendering ─────────────────────────────────────────────────────────────────
-function render() {
-  const filtered = applyFilters(allRequests);
-  updateStats(filtered.length, allRequests.length);
-
-  const list = document.getElementById('request-list');
-
-  if (filtered.length === 0) {
-    list.innerHTML = '<div class="empty">No requests match the current filter.</div>';
-    return;
-  }
-
-  // Newest first, cap at 200 rows for performance
-  const rows = [...filtered].reverse().slice(0, 200);
-  list.innerHTML = rows.map((req, i) => rowHtml(req, i)).join('');
-
-  // Attach click handlers
-  list.querySelectorAll('.req-row').forEach((el, i) => {
-    el.addEventListener('click', () => openDetail(rows[i]));
-  });
-}
-
-function rowHtml(req, _i) {
-  const statusClass = statusToClass(req.status, req.error);
-  const badgeClass  = statusClass;
-  const label       = req.error ? 'ERR' : (req.status || '…');
-  const url         = friendlyUrl(req.url);
-  const ts          = formatTs(req.timestamp);
-  const mime        = req.mimeType ? shortMime(req.mimeType) : '';
-
-  return `
-    <div class="req-row ${statusClass}">
-      <div class="req-method">${esc(req.method || 'GET')}</div>
-      <div class="req-info">
-        <div class="req-url" title="${esc(req.url)}">${esc(url)}</div>
-        <div class="req-meta">
-          <span class="badge ${badgeClass}">${esc(String(label))}</span>
-          <span class="ts">${ts}</span>
-          ${mime ? `<span class="mime">${esc(mime)}</span>` : ''}
-        </div>
-      </div>
-    </div>`;
-}
-
-// ── Detail panel ──────────────────────────────────────────────────────────────
-function openDetail(req) {
-  selectedRequest = req;
-  document.getElementById('detail-title').textContent = friendlyUrl(req.url);
-  document.getElementById('detail-panel').classList.remove('hidden');
-  showDetailTab(req, activeTab);
-}
-
-function closeDetail() {
-  document.getElementById('detail-panel').classList.add('hidden');
-  selectedRequest = null;
-}
-
-function showDetailTab(req, tab) {
-  const pre = document.getElementById('detail-content');
-
-  switch (tab) {
-    case 'overview':
-      pre.textContent = JSON.stringify({
-        url:          req.url,
-        method:       req.method,
-        status:       req.status,
-        statusText:   req.statusText,
-        mimeType:     req.mimeType,
-        resourceType: req.resourceType,
-        timestamp:    req.timestamp,
-        error:        req.error || undefined,
-        encodedDataLength: req.encodedDataLength
-      }, null, 2);
-      break;
-    case 'reqHeaders':
-      pre.textContent = formatHeaders(req.requestHeaders);
-      break;
-    case 'reqBody':
-      pre.textContent = req.requestBody
-        ? (typeof req.requestBody === 'string' ? req.requestBody : JSON.stringify(req.requestBody, null, 2))
-        : '(no request body)';
-      break;
-    case 'resHeaders':
-      pre.textContent = formatHeaders(req.responseHeaders);
-      break;
-    case 'resBody':
-      if (req.responseBase64) {
-        pre.textContent = '(binary / base64)\n\n' + req.responseBody;
-      } else if (!req.responseBody && req.responseBody !== 0) {
-        pre.textContent = '(no response body captured)';
-      } else {
-        pre.textContent = typeof req.responseBody === 'string'
-          ? req.responseBody
-          : JSON.stringify(req.responseBody, null, 2);
-      }
-      break;
-    case 'full':
-      pre.textContent = JSON.stringify(req, null, 2);
-      break;
-    default:
-      pre.textContent = '';
-  }
-}
-
-function formatHeaders(obj) {
-  if (!obj) return '(none)';
-  return Object.entries(obj)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join('\n');
-}
-
-// ── Actions ───────────────────────────────────────────────────────────────────
-function handleClear() {
-  if (!confirm('Clear all captured requests?')) return;
-  chrome.runtime.sendMessage({ action: 'clearRequests' }, () => {
-    allRequests = [];
-    render();
-    updateStats(0, 0);
-    closeDetail();
-    showToast('Cleared');
-  });
-}
-
-function handleDownload() {
-  const filtered = applyFilters(allRequests);
-
-  // Build JSON blob in popup context (no downloads permission needed)
-  const json = JSON.stringify(filtered, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `upwork_api_capture_${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast(`Downloaded ${filtered.length} requests`);
-}
-
-function handleAttach() {
-  chrome.runtime.sendMessage({ action: 'attachCurrent' }, (res) => {
-    if (res?.attached) {
-      showToast('Debugger attached');
-      checkStatus();
-    } else {
-      showToast('Could not attach (DevTools open?)');
-    }
-  });
-}
-
-// ── Stats ─────────────────────────────────────────────────────────────────────
-function updateStats(shown, total) {
-  const el = document.getElementById('stats-text');
-  if (total === 0) {
-    el.textContent = 'No requests captured yet';
-  } else if (shown === total) {
-    el.textContent = `${total} request${total !== 1 ? 's' : ''} captured`;
-  } else {
-    el.textContent = `Showing ${shown} of ${total} captured`;
-  }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function statusToClass(status, error) {
-  if (error) return 'failed';
-  if (!status) return '';
-  if (status >= 200 && status < 300) return 'ok';
-  if (status >= 300 && status < 400) return 'redir';
-  return 'err';
-}
-
-function friendlyUrl(url) {
-  try {
-    const u = new URL(url);
-    const qs = u.search.length > 40 ? u.search.slice(0, 40) + '…' : u.search;
-    return u.pathname + qs;
-  } catch {
-    return url.length > 80 ? url.slice(0, 80) + '…' : url;
-  }
-}
-
-function shortMime(mime) {
-  // e.g. "application/x-thrift+json" → "thrift+json"
-  return mime.replace('application/', '').replace('text/', '');
-}
-
-function formatTs(ts) {
-  if (!ts) return '';
-  try { return new Date(ts).toLocaleTimeString(); } catch { return ts; }
-}
-
-function esc(str) {
-  return String(str)
+// -- Helpers ------------------------------------------------------------------
+function esc(s) {
+  return String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -329,787 +24,614 @@ function showToast(msg) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.remove('hidden');
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.add('hidden'), 2200);
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => el.classList.add('hidden'), 2800);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// COMPANY LOOKUP PANEL
-// ═══════════════════════════════════════════════════════════════════════════════
-
-let lookupResults = {}; // keyed by companyId → array of query results
-let activeLookupTab = null;
-
-function initLookupPanel() {
-  loadDetectedCompanies();
-  loadExistingLookupResults();
+function relTime(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60000)    return 'just now';
+  if (diff < 3600000)  return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  return Math.floor(diff / 86400000) + 'd ago';
 }
 
-// ── Load detected companies ───────────────────────────────────────────────────
-function loadDetectedCompanies() {
-  chrome.runtime.sendMessage({ action: 'getDetectedCompanies' }, (res) => {
-    renderDetectedList(res?.companies || []);
+function fmtSpent(amount) {
+  if (!amount) return null;
+  if (amount >= 1000000) return '$' + (amount / 1000000).toFixed(1) + 'M spent';
+  if (amount >= 1000)    return '$' + Math.round(amount / 1000) + 'K spent';
+  return '$' + Math.round(amount) + ' spent';
+}
+
+// -- Init ---------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+  const PANELS = ['jobs', 'search', 'config'];
+
+  document.querySelectorAll('.top-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const panel = btn.dataset.panel;
+      activePanel = panel;
+      document.querySelectorAll('.top-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      PANELS.forEach(p => document.getElementById('panel-' + p).classList.toggle('hidden', p !== panel));
+      if (panel === 'jobs')   loadJobs();
+      if (panel === 'search') loadSearchJobs();
+      if (panel === 'config') initConfigPanel();
+    });
+  });
+
+  document.getElementById('btn-toggle').addEventListener('click', handleToggle);
+  document.getElementById('btn-run-scrape').addEventListener('click', handleRunScrape);
+  document.getElementById('btn-jobs-refresh').addEventListener('click', loadJobs);
+  document.getElementById('btn-jobs-download').addEventListener('click', handleJobsDownload);
+  document.getElementById('btn-jobs-clear').addEventListener('click', handleJobsClear);
+  document.getElementById('drawer-close').addEventListener('click', () => {
+    document.getElementById('job-drawer').classList.add('hidden');
+    drawerJob = null;
+  });
+
+  document.getElementById('btn-search-download').addEventListener('click', handleSearchDownload);
+  document.getElementById('btn-search-clear').addEventListener('click', handleSearchClear);
+  document.getElementById('search-drawer-close').addEventListener('click', () => {
+    document.getElementById('search-drawer').classList.add('hidden');
+    searchDrawerJob = null;
+  });
+
+  // Auto-refresh when background saves new data
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.companyLookups && activePanel === 'jobs')   loadJobs();
+    if (changes.lastSearchJobs  && activePanel === 'search') loadSearchJobs();
+  });
+
+  // Always start with a clean search tab — wipe any stale results from last session
+  chrome.storage.local.remove('lastSearchJobs');
+  loadActiveState();
+  loadJobs();
+  renderSearchGrid();
+});
+
+// -- Activate / Deactivate ----------------------------------------------------
+function loadActiveState() {
+  chrome.runtime.sendMessage({ action: 'getActiveState' }, (res) => {
+    setActiveUI(res?.active ?? false);
   });
 }
 
-function loadExistingLookupResults() {
-  chrome.runtime.sendMessage({ action: 'getCompanyLookups' }, (res) => {
-    const lookups = res?.lookups || [];
-    lookups.forEach(l => { lookupResults[l.companyId] = l.results; });
-    // Update download button state
-    document.getElementById('btn-lookup-download').disabled = lookups.length === 0;
-    // Refresh detected list to show "done" state on any already-run companies
-    loadDetectedCompanies();
+function handleToggle() {
+  const btn = document.getElementById('btn-toggle');
+  const turnOn = btn.classList.contains('off');
+  chrome.runtime.sendMessage({ action: turnOn ? 'activate' : 'deactivate' }, (res) => {
+    setActiveUI(res?.active ?? turnOn);
   });
 }
 
-function renderDetectedList(companies) {
-  const el = document.getElementById('detected-list');
-  if (companies.length === 0) {
-    el.innerHTML = '<div class="empty">Open a job on Upwork — companies are detected automatically.</div>';
+function setActiveUI(active) {
+  const btn = document.getElementById('btn-toggle');
+  const statusEl = document.getElementById('status');
+  btn.textContent = active ? 'ON' : 'OFF';
+  btn.classList.toggle('on', active);
+  btn.classList.toggle('off', !active);
+  statusEl.textContent = active ? '\u25CF Active' : '\u25CF Inactive';
+  statusEl.className = 'status ' + (active ? 'active' : 'inactive');
+}
+
+// -- Load all jobs (passive browse detects) -----------------------------------
+function loadJobs() {
+  chrome.storage.local.get(['companyLookups'], (s) => {
+    allJobs = (s.companyLookups || []).slice().reverse();
+    document.getElementById('btn-jobs-download').disabled = allJobs.length === 0;
+    renderJobsList();
+  });
+}
+
+// -- Load search results (last Run Scrape) ------------------------------------
+function loadSearchJobs() {
+  // Only show results if a scrape was triggered this popup session.
+  // This ensures the Search tab is always blank on fresh popup open.
+  if (!scrapeRunThisSession) {
+    searchJobs = [];
+    document.getElementById('btn-search-download').disabled = true;
+    document.getElementById('search-count').textContent = 'No results yet \u2014 click \u25B6 Run Scrape in Jobs tab';
+    renderSearchGrid();
     return;
   }
-
-  el.innerHTML = companies.map(c => {
-    const hasResult = !!lookupResults[c.companyId];
-    const loc = c.location ? `${c.location.city || ''}, ${c.location.country || ''}`.replace(/^, |, $/, '') : '';
-    const ts = c.detectedAt ? new Date(c.detectedAt).toLocaleTimeString() : '';
-    return `
-      <div class="detected-row ${hasResult ? 'has-result' : ''}" data-company-id="${esc(c.companyId)}">
-        <div class="detected-info">
-          <div class="detected-company-id">${esc(c.companyId)}</div>
-          <div class="detected-job-title" title="${esc(c.jobTitle)}">${esc(c.jobTitle)}</div>
-          <div class="detected-meta">${loc ? esc(loc) + ' · ' : ''}${ts}</div>
-        </div>
-        <button class="btn-run ${hasResult ? 'done' : ''}"
-          data-company-id="${esc(c.companyId)}"
-          data-job-ciphertext="${esc(c.jobCiphertext || '')}"
-          data-job-title="${esc(c.jobTitle)}">
-          ${hasResult ? '✓ View' : '▶ Run'}
-        </button>
-      </div>`;
-  }).join('');
-
-  // Attach click handlers for run buttons
-  el.querySelectorAll('.btn-run').forEach(btn => {
-    btn.addEventListener('click', () => handleRunLookup(btn));
+  chrome.storage.local.get(['lastSearchJobs'], (s) => {
+    searchJobs = s.lastSearchJobs || [];
+    const countEl = document.getElementById('search-count');
+    document.getElementById('btn-search-download').disabled = searchJobs.length === 0;
+    countEl.textContent = searchJobs.length
+      ? searchJobs.length + ' job' + (searchJobs.length !== 1 ? 's' : '') + ' from last scrape'
+      : 'Scraping\u2026 jobs will appear here as they are processed';
+    renderSearchGrid();
   });
 }
 
-// ── Run All pending lookups sequentially ─────────────────────────────────────
-function handleRunAll() {
-  const rows = [...document.querySelectorAll('.btn-run:not(.done):not(.running)')];
-  if (rows.length === 0) { showToast('All detected companies already done'); return; }
+// -- Extract job info ---------------------------------------------------------
+function extractJobInfo(entry) {
+  const results  = entry.results || [];
+  const buyerR   = results.find(r => r.alias === 'jobAuth-buyer');
+  const fullR    = results.find(r => r.alias === 'jobAuth-full');
+  const ctxR     = results.find(r => r.alias === 'fetchjobdetailsandcontext');
+  const cdR      = results.find(r => r.alias === 'client-details');
+  const cpR      = results.find(r => r.alias === 'company-page');
+  const compDetR = results.find(r => r.alias === 'company-details');
 
-  const runAllBtn = document.getElementById('btn-lookup-run-all');
-  runAllBtn.disabled = true;
-  runAllBtn.textContent = `⏳ 0/${rows.length}`;
+  // jobAuth-full has opening.job; jobAuth-buyer only has buyer info (no opening)
+  const authFull  = fullR?.data?.data?.jobAuthDetails;
+  const authBuyer = buyerR?.data?.data?.jobAuthDetails;
+  const openingJ  = authFull?.opening || authBuyer?.opening;
+  const jobNode   = openingJ?.job || {};
+  const jobInfo   = jobNode.info || {};
+  const buyer     = authBuyer?.buyer || authFull?.buyer;
+  const buyerInfo = buyer?.info || {};
+  const company   = buyerInfo?.company || {};
+  const stats     = buyerInfo?.stats || {};
+  const location  = buyerInfo?.location || buyer?.location || {};
 
-  let completed = 0;
+  const ctxData    = ctxR?.data?.data?.fetchJobDetailsAndContext
+                  || ctxR?.data?.data?.fetchjobdetailsandcontext;
+  const ctxOpening = ctxData?.opening || {};
+  // extendedBudgetInfo lives on ctxOpening (fetchjobdetailsandcontext), not jobNode
+  const jobExt     = ctxOpening.extendedBudgetInfo || jobNode.extendedBudgetInfo || {};
 
-  const runNext = (i) => {
-    if (i >= rows.length) {
-      runAllBtn.disabled = false;
-      runAllBtn.textContent = '▶▶ Run All';
-      showToast(`Run All done — ${completed} completed`);
-      return;
+  // Extract skills from segmentationData or sandsData
+  const skills = [];
+  const skillSrc = ctxOpening.segmentationData || ctxOpening.sandsData?.ontologySkills
+                || jobNode.segmentationData    || jobNode.sandsData?.ontologySkills || [];
+  for (const s of skillSrc) {
+    const name = s?.skill?.prettyName || s?.prettyName || s?.prefLabel || s?.customValue;
+    if (name && typeof name === 'string' && !skills.includes(name)) skills.push(name);
+  }
+  if (!skills.length) {
+    for (const s of (jobInfo.skills || [])) {
+      const name = s?.prettyName || s?.name || (typeof s === 'string' ? s : null);
+      if (name && !skills.includes(name)) skills.push(name);
     }
-    const btn = rows[i];
-    // Skip if it's now done (another interaction may have completed it)
-    if (btn.classList.contains('done')) { runNext(i + 1); return; }
+  }
 
-    const companyId    = btn.dataset.companyId;
-    const jobCiphertext = btn.dataset.jobCiphertext || null;
-    const jobTitle     = btn.dataset.jobTitle || 'Unknown';
+  const jobType   = jobExt.hourlyBudgetMin != null ? 'hourly'
+    : (jobInfo.jobType || '').toLowerCase() || '';
+  const hourlyMin = jobExt.hourlyBudgetMin ?? jobInfo.hourlyBudgetMin;
+  const hourlyMax = jobExt.hourlyBudgetMax ?? jobInfo.hourlyBudgetMax;
+  const fixedAmt  = ctxOpening.budget?.amount ?? jobNode.budget?.amount ?? jobInfo.amount?.amount;
+  const currency  = ctxOpening.budget?.currencyCode || jobNode.budget?.currencyCode || jobInfo.amount?.currencyCode || 'USD';
 
-    btn.classList.add('running');
-    btn.textContent = '⏳';
-    btn.disabled = true;
+  const totalSpent = stats.totalCharges?.amount ?? stats.totalSpent?.amount;
+  const rating     = stats.score ?? stats.rating;
 
-    chrome.runtime.sendMessage(
-      { action: 'runCompanyLookup', companyId, jobCiphertext, jobTitle },
-      (res) => {
-        btn.disabled = false;
-        if (res?.success) {
-          lookupResults[companyId] = res.results;
-          btn.classList.remove('running');
-          btn.classList.add('done');
-          btn.textContent = '✓ View';
-          document.getElementById('btn-lookup-download').disabled = false;
-          const row = document.querySelector(`.detected-row[data-company-id="${companyId}"]`);
-          if (row) row.classList.add('has-result');
-          completed++;
-        } else {
-          btn.classList.remove('running');
-          btn.textContent = '▶ Retry';
-          showToast(`Error for ${companyId}: ` + (res?.error || 'Unknown error'));
-        }
-        runAllBtn.textContent = `⏳ ${completed}/${rows.length}`;
-        runNext(i + 1);
+  const agencySet = new Map();
+  for (const r of [cdR, compDetR]) {
+    for (const p of (r?.profiles || [])) {
+      for (const ag of (p.agencies || [])) {
+        if (ag.id && !agencySet.has(ag.id)) agencySet.set(ag.id, ag);
       }
-    );
+    }
+  }
+
+  const staffs = cpR?.data?.data?.agencyStaffsAuth?.staffs || [];
+
+  let proposals = null;
+  if (ctxOpening.clientActivity?.totalApplicants != null) {
+    proposals = ctxOpening.clientActivity.totalApplicants;
+  }
+
+  // companyName: prefer GQL name, fall back to readable country hint, then ID
+  const companyName = company.name
+    || (location.country ? 'New client \u2014 ' + location.country : null)
+    || ('Client #' + entry.companyId);
+
+  return {
+    title:       jobNode.info?.title || ctxOpening.info?.title || entry.jobTitle || 'Unknown Job',
+    description: ctxOpening.description || jobNode.description || jobInfo.description || '',
+    skills,
+    jobType, hourlyMin, hourlyMax, fixedAmt, currency,
+    category:    jobNode.category?.name || ctxOpening.category?.name || jobInfo.category?.name,
+    country:     location.country || location.countryCode,
+    city:        location.city,
+    companyName,
+    companyId:   entry.companyId,
+    totalSpent,
+    totalJobs:   stats.totalJobsPosted,
+    rating,
+    reviews:     stats.feedbackCount ?? stats.totalFeedback,
+    isPaymentVerified: buyer?.isPaymentMethodVerified ?? company.isPaymentVerified,
+    agencies:    [...agencySet.values()],
+    staffs,
+    proposals,
+    jobCiphertext: entry.jobCiphertext,
+    runAt:       entry.runAt,
+    source:      entry.source,
+    _entry:      entry,
   };
-
-  runNext(0);
 }
 
-// ── Run a lookup ──────────────────────────────────────────────────────────────
-function handleRunLookup(btn) {
-  const companyId    = btn.dataset.companyId;
-  const jobCiphertext = btn.dataset.jobCiphertext || null;
-  const jobTitle     = btn.dataset.jobTitle || 'Unknown';
-
-  // If already have results, just show them
-  if (lookupResults[companyId] && btn.classList.contains('done')) {
-    showLookupResults(companyId, jobTitle, lookupResults[companyId]);
+// -- Render all-jobs list (Jobs tab) ------------------------------------------
+function renderJobsList() {
+  const el = document.getElementById('jobs-list');
+  if (allJobs.length === 0) {
+    el.innerHTML = '<div class="empty">Browse a job on Upwork to auto-detect, or click \u25B6 Run Scrape.</div>';
     return;
   }
-
-  btn.classList.add('running');
-  btn.textContent = '⏳ Running…';
-  btn.disabled = true;
-
-  chrome.runtime.sendMessage(
-    { action: 'runCompanyLookup', companyId, jobCiphertext, jobTitle },
-    (res) => {
-      btn.disabled = false;
-      if (res?.success) {
-        lookupResults[companyId] = res.results;
-        btn.classList.remove('running');
-        btn.classList.add('done');
-        btn.textContent = '✓ View';
-        document.getElementById('btn-lookup-download').disabled = false;
-        // Mark the row
-        const row = document.querySelector(`.detected-row[data-company-id="${companyId}"]`);
-        if (row) row.classList.add('has-result');
-        showLookupResults(companyId, jobTitle, res.results);
-        showToast(`Lookup done — ${res.results.length} queries`);
-      } else {
-        btn.classList.remove('running');
-        btn.textContent = '▶ Retry';
-        showToast('Error: ' + (res?.error || 'Unknown error'));
-      }
-    }
-  );
+  el.innerHTML = allJobs.map((entry, i) => jobCardHtml(extractJobInfo(entry), i)).join('');
+  el.querySelectorAll('.job-card-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); openJobDrawer(allJobs[+btn.dataset.idx]); });
+  });
+  el.querySelectorAll('.job-card').forEach((card, i) => {
+    card.addEventListener('click', () => openJobDrawer(allJobs[i]));
+  });
 }
 
-// ── Display results ───────────────────────────────────────────────────────────
-function showLookupResults(companyId, jobTitle, results) {
-  activeLookupTab = results[0]?.alias || null;
+// -- Render search results grid (Search tab, 2 columns) -----------------------
+function renderSearchGrid() {
+  const el = document.getElementById('search-grid');
+  if (searchJobs.length === 0) {
+    el.innerHTML = '<div class="empty sg-empty">Run Scrape in the Jobs tab to see results here.</div>';
+    return;
+  }
+  el.innerHTML = searchJobs.map((entry, i) => searchCardHtml(extractJobInfo(entry), i)).join('');
+  el.querySelectorAll('.search-card').forEach((card, i) => {
+    card.addEventListener('click', () => openSearchDrawer(searchJobs[i]));
+  });
+}
 
-  document.getElementById('lookup-result-title').textContent =
-    `${companyId} — ${jobTitle.substring(0, 50)}`;
-  document.getElementById('lookup-result-panel').classList.remove('hidden');
+// -- Job card (single-column, Jobs tab) ---------------------------------------
+function jobCardHtml(info, i) {
+  const budgetLabel = info.jobType === 'hourly' && (info.hourlyMin != null || info.hourlyMax != null)
+    ? '$' + (info.hourlyMin ?? '?') + '\u2013$' + (info.hourlyMax ?? '?') + '/hr'
+    : info.fixedAmt != null ? '$' + info.fixedAmt + ' ' + info.currency + ' fixed' : '';
 
-  // Build tabs (one per query alias + fulljson)
-  const tabsEl = document.getElementById('lookup-result-tabs');
-  tabsEl.innerHTML = results.map((r, i) =>
-    `<button class="tab-btn ${i === 0 ? 'active' : ''}" data-alias="${esc(r.alias)}">${esc(shortAlias(r.alias))}</button>`
-  ).join('') + `<button class="tab-btn" data-alias="__fulljson__">full json</button>`;
+  const typeLabel = info.jobType === 'hourly' ? 'Hourly' : info.fixedAmt != null ? 'Fixed' : info.jobType || '';
+  const typeClass = info.jobType === 'hourly' ? 'hourly' : 'fixed';
+  const descText  = (info.description || '').replace(/\n+/g, ' ').slice(0, 160);
+  const spentStr  = fmtSpent(info.totalSpent);
+  const agencyHtml = info.agencies.length
+    ? '<span class="card-agency">\uD83C\uDFE2 ' + esc(info.agencies[0].name || 'Agency') + '</span>'
+    : '';
+  const skillsHtml = info.skills.slice(0, 6).map(s => '<span class="skill-tag">' + esc(s) + '</span>').join('');
 
+  return '<div class="job-card" data-idx="' + i + '">' +
+    '<div class="card-header">' +
+      '<div class="card-title-row">' +
+        (typeLabel ? '<span class="job-type-badge ' + esc(typeClass) + '">' + esc(typeLabel) + '</span>' : '') +
+        '<span class="card-title">' + esc(info.title) + '</span>' +
+      '</div>' +
+      '<div class="card-budget-row">' +
+        (budgetLabel ? '<span class="card-budget">' + esc(budgetLabel) + '</span>' : '') +
+        '<span class="card-time">' + relTime(info.runAt) + '</span>' +
+      '</div>' +
+    '</div>' +
+    (descText ? '<div class="card-desc">' + esc(descText) + (info.description.length > 160 ? '\u2026' : '') + '</div>' : '') +
+    (skillsHtml ? '<div class="card-skills">' + skillsHtml + '</div>' : '') +
+    '<div class="card-footer">' +
+      '<div class="card-stats-left">' +
+        (info.country ? '<span class="card-stat">\uD83D\uDCCD ' + esc(info.country) + '</span>' : '') +
+        (spentStr    ? '<span class="card-stat">' + esc(spentStr) + '</span>' : '') +
+        (info.rating != null ? '<span class="card-stat">\u2605 ' + (+info.rating).toFixed(1) + '</span>' : '') +
+      '</div>' +
+      '<div class="card-stats-right">' +
+        agencyHtml +
+        (info.proposals != null ? '<span class="card-stat-right">\uD83D\uDDC2 ' + esc(String(info.proposals)) + ' proposals</span>' : '') +
+      '</div>' +
+    '</div>' +
+    '<button class="job-card-btn" data-idx="' + i + '">Details \u2192</button>' +
+  '</div>';
+}
+
+// -- Search card (2-column grid, Search tab) ----------------------------------
+function searchCardHtml(info, i) {
+  const budget = info.jobType === 'hourly' && (info.hourlyMin != null || info.hourlyMax != null)
+    ? '$' + (info.hourlyMin ?? '?') + '\u2013$' + (info.hourlyMax ?? '?') + '/hr'
+    : info.fixedAmt != null ? '$' + info.fixedAmt + ' fixed' : '';
+  const typeLabel = info.jobType === 'hourly' ? 'Hourly' : info.fixedAmt != null ? 'Fixed' : info.jobType || '';
+  const typeClass = info.jobType === 'hourly' ? 'hourly' : 'fixed';
+  const descText  = (info.description || '').replace(/\n+/g, ' ').slice(0, 130);
+  const spentStr  = fmtSpent(info.totalSpent);
+  const skillsHtml = info.skills.slice(0, 4).map(s => '<span class="skill-tag">' + esc(s) + '</span>').join('');
+
+  return '<div class="search-card" data-idx="' + i + '">' +
+    '<div class="sc-top">' +
+      (typeLabel ? '<span class="job-type-badge ' + esc(typeClass) + '">' + esc(typeLabel) + '</span>' : '') +
+      (budget ? '<span class="sc-budget">' + esc(budget) + '</span>' : '') +
+      '<span class="sc-time">' + relTime(info.runAt) + '</span>' +
+    '</div>' +
+    '<div class="sc-title">' + esc(info.title) + '</div>' +
+    (descText ? '<div class="sc-desc">' + esc(descText) + (info.description.length > 130 ? '\u2026' : '') + '</div>' : '') +
+    (skillsHtml ? '<div class="sc-skills">' + skillsHtml + '</div>' : '') +
+    '<div class="sc-footer">' +
+      (info.country ? '<span class="sc-stat">\uD83D\uDCCD ' + esc(info.country) + '</span>' : '') +
+      (spentStr    ? '<span class="sc-stat">' + esc(spentStr) + '</span>' : '') +
+      (info.rating != null ? '<span class="sc-stat">\u2605 ' + (+info.rating).toFixed(1) + '</span>' : '') +
+      (info.agencies.length ? '<span class="sc-stat sc-agency">\uD83C\uDFE2 ' + esc(info.agencies[0].name || 'Agency') + '</span>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+// -- Job drawer (Jobs tab: targets job-drawer) ---------------------------------
+function openJobDrawer(entry) {
+  drawerJob = entry;
+  const info = extractJobInfo(entry);
+  document.getElementById('drawer-title').textContent = info.title.slice(0, 55);
+  document.getElementById('job-drawer').classList.remove('hidden');
+  buildDrawerTabs('drawer-tabs', drawerTab, (tab) => {
+    drawerTab = tab;
+    renderDrawerContent('drawer-content', entry, info, tab);
+  });
+  renderDrawerContent('drawer-content', entry, info, drawerTab);
+  document.getElementById('job-drawer').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// -- Search drawer (Search tab: targets search-drawer) ------------------------
+function openSearchDrawer(entry) {
+  searchDrawerJob = entry;
+  const info = extractJobInfo(entry);
+  document.getElementById('search-drawer-title').textContent = info.title.slice(0, 55);
+  document.getElementById('search-drawer').classList.remove('hidden');
+  buildDrawerTabs('search-drawer-tabs', searchDrawerTab, (tab) => {
+    searchDrawerTab = tab;
+    renderDrawerContent('search-drawer-content', entry, info, tab);
+  });
+  renderDrawerContent('search-drawer-content', entry, info, searchDrawerTab);
+  document.getElementById('search-drawer').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// -- Shared drawer tab builder ------------------------------------------------
+function buildDrawerTabs(tabsElId, activeTab, onChange) {
+  const tabs = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'client',   label: 'Client'   },
+    { id: 'agency',   label: 'Agency'   },
+    { id: 'context',  label: 'Context'  },
+    { id: 'raw',      label: 'Raw JSON' },
+  ];
+  const tabsEl = document.getElementById(tabsElId);
+  tabsEl.innerHTML = tabs.map(t =>
+    '<button class="tab-btn ' + (t.id === activeTab ? 'active' : '') + '" data-dtab="' + esc(t.id) + '">' + esc(t.label) + '</button>'
+  ).join('');
   tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       tabsEl.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      activeLookupTab = btn.dataset.alias;
-      renderLookupTabContent(results, activeLookupTab);
+      onChange(btn.dataset.dtab);
     });
   });
-
-  renderLookupTabContent(results, activeLookupTab);
-
-  // Scroll result panel into view
-  document.getElementById('lookup-result-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function renderLookupTabContent(results, alias) {
-  const pre = document.getElementById('lookup-result-content');
-
-  if (alias === '__fulljson__') {
-    pre.textContent = JSON.stringify(results, null, 2);
-    return;
-  }
-
-  const result = results.find(r => r.alias === alias);
-  if (!result) return;
-
-  if (alias === 'client-details') {
-    const profiles = result.profiles || [];
-    if (!profiles.length) { pre.textContent = '(no profiles fetched)'; return; }
-    const lines = [];
-    for (const p of profiles) {
-      lines.push('▶ ' + (p.name || p.ciphertext || '—') + '  [status: ' + (p.status || '?') + ']');
-      if (p.error) { lines.push('    Error: ' + p.error); lines.push(''); continue; }
-      if (p.ciphertext) lines.push('    Profile    : https://www.upwork.com/freelancers/' + p.ciphertext);
-      const agencies = p.agencies || [];
-      if (agencies.length) {
-        for (const ag of agencies) {
-          lines.push('    Agency     : ' + (ag.name || '—') + '  (id: ' + ag.id + ')');
-          lines.push('      URL      : https://www.upwork.com/agencies/' + ag.id + '/');
-          if (ag.logo)             lines.push('      Logo     : ' + ag.logo);
-          if (ag.score != null)    lines.push('      Score    : ' + ag.score);
-          if (ag.totalFeedback)    lines.push('      Reviews  : ' + ag.totalFeedback);
-          if (ag.totalHours)       lines.push('      Hours    : ' + ag.totalHours);
-          if (ag.nSS100BwScore != null) lines.push('      NSS      : ' + ag.nSS100BwScore);
-          if (ag.topRatedStatus)   lines.push('      TopRated : ' + ag.topRatedStatus);
-          if (ag.hideEacEarnings != null) lines.push('      HideEAC  : ' + ag.hideEacEarnings);
-        }
-      } else {
-        lines.push('    (no agencies in getDetails response)');
-        if (p.rawResponse) lines.push('    raw: ' + JSON.stringify(p.rawResponse).slice(0, 300));
-      }
-      lines.push('');
-    }
-    pre.textContent = lines.join('\n');
-    return;
-  }
-
-  if (alias === 'company-details') {
-    const profiles = result.profiles || [];
-    if (!profiles.length) {
-      // fallback: flat agencies list (old format)
-      const agencies = result.agencies || [];
-      if (!agencies.length) { pre.textContent = '(no agency data found)'; return; }
-      pre.textContent = JSON.stringify(agencies, null, 2);
-      return;
-    }
-    const lines = [];
-    for (const p of profiles) {
-      if (p.error) {
-        lines.push('\u25b6 ' + (p.name || p.ciphertext) + '  \u2014  error: ' + p.error);
-        lines.push('');
-        continue;
-      }
-      const agList = p.agencies || [];
-      if (!agList.length) {
-        lines.push('\u25b6 ' + (p.name || p.ciphertext) + '  \u2014  (no agencies)');
-        lines.push('');
-        continue;
-      }
-      for (const ag of agList) {
-        lines.push('\u25b6 ' + (ag.name || '\u2014') + '  (via ' + (p.name || p.ciphertext) + ')');
-        lines.push('    Agency URL : https://www.upwork.com/agencies/' + ag.id + '/');
-        if (ag.logo)                                            lines.push('    Logo       : ' + ag.logo);
-        if (ag.score != null)                                   lines.push('    Score      : ' + ag.score);
-        if (ag.totalFeedback != null)                           lines.push('    Reviews    : ' + ag.totalFeedback);
-        if (ag.totalHours != null)                              lines.push('    Hours      : ' + ag.totalHours);
-        if (ag.nSS100BwScore != null)                           lines.push('    NSS        : ' + ag.nSS100BwScore);
-        if (ag.topRatedStatus)                                  lines.push('    Top Rated  : ' + ag.topRatedStatus);
-        if (ag.topRatedPlusStatus)                              lines.push('    Top Rated+ : ' + ag.topRatedPlusStatus);
-        if (ag.hideEacEarnings != null)                         lines.push('    Hide EAC   : ' + ag.hideEacEarnings);
-        lines.push('');
-      }
-    }
-    pre.textContent = lines.join('\n');
-    return;
-  }
-
-  const display = {
-    alias:  result.alias,
-    status: result.status,
-    error:  result.error,
-    data:   result.data
-  };
-  pre.textContent = JSON.stringify(display, null, 2);
-}
-
-function shortAlias(alias) {
-  // Shorten long aliases for tabs
-  return alias
-    .replace('fetchjobdetailsandcontext', 'job context')
-    .replace('company-details', 'company details')
-    .replace('client-details', 'client details')
-    .replace('company-page', 'client name')
-    .replace('introspect-', '⌕ ')
-    .replace('gql-query-', '')
-    .replace('getCompany', 'company')
-    .replace(/Extended|Direct/i, '+');
-}
-
-// ── Download all lookup results ───────────────────────────────────────────────
-function handleLookupDownload() {
-  chrome.runtime.sendMessage({ action: 'getCompanyLookups' }, (res) => {
-    const lookups = res?.lookups || [];
-    if (lookups.length === 0) { showToast('No results to download yet'); return; }
-    const json = JSON.stringify(lookups, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `upwork_company_lookup_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast(`Downloaded ${lookups.length} company lookup(s)`);
-  });
-}
-
-// ── Clear all company data ────────────────────────────────────────────────────
-function handleLookupClear() {
-  if (!confirm('Clear all detected companies and lookup results?')) return;
-  chrome.runtime.sendMessage({ action: 'clearCompanyData' }, () => {
-    lookupResults = {};
-    activeLookupTab = null;
-    document.getElementById('lookup-result-panel').classList.add('hidden');
-    document.getElementById('btn-lookup-download').disabled = true;
-    renderDetectedList([]);
-    showToast('Cleared');
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// JOB DETAILS PANEL  (capture.js logic inside the extension)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-let jdActiveTab  = 'overview';
-let jdCurrentJob = null;
-let jdAllJobs    = [];
-
-function initJobDetailsPanel() {
-  document.getElementById('btn-jd-capture').addEventListener('click', handleJdCapture);
-  document.getElementById('btn-jd-clear').addEventListener('click', handleJdClear);
-  document.getElementById('btn-jd-download').addEventListener('click', handleJdDownload);
-  document.getElementById('jd-result-close').addEventListener('click', () => {
-    document.getElementById('jd-result-panel').classList.add('hidden');
-    jdCurrentJob = null;
-  });
-  document.getElementById('jd-result-copy').addEventListener('click', () => {
-    navigator.clipboard.writeText(document.getElementById('jd-result-content').textContent)
-      .then(() => showToast('Copied!'));
-  });
-  document.querySelectorAll('#jd-result-tabs .tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('#jd-result-tabs .tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      jdActiveTab = btn.dataset.jdtab;
-      if (jdCurrentJob) jdRenderTab(jdCurrentJob, jdActiveTab);
-    });
-  });
-  jdLoadJobs();
-}
-
-// ── Load & render job list ────────────────────────────────────────────────────
-function jdLoadJobs() {
-  chrome.runtime.sendMessage({ action: 'getCapturedJobs' }, (res) => {
-    jdAllJobs = res?.jobs || [];
-    document.getElementById('btn-jd-download').disabled = jdAllJobs.length === 0;
-    jdRenderJobList();
-  });
-}
-
-function jdRenderJobList() {
-  const el = document.getElementById('jd-job-list');
-  if (jdAllJobs.length === 0) {
-    el.innerHTML = '<div class="empty">Open a job page on Upwork, then click ▶ Capture.</div>';
-    return;
-  }
-  el.innerHTML = jdAllJobs.map((j, i) => {
-    const title   = j.job?.title || j.job?.info?.title || '(untitled)';
-    const company = j.company?.name || '—';
-    const country = j.location?.country || '';
-    const sources = j._sources?.length || 0;
-    const ts      = j._capturedAt ? new Date(j._capturedAt).toLocaleTimeString() : '';
-    // Stage breakdown badge
-    const stageCounts = {};
-    for (const r of (j._rawAll || [])) { const s = r.pageStage || 'other'; stageCounts[s] = (stageCounts[s] || 0) + 1; }
-    const stageBadges = Object.entries(stageCounts).map(([s, n]) => `${s}:${n}`).join(' ');
-    const autoBadge = j._autoCapture ? ' <span style="color:#f0a;font-size:10px;">[auto]</span>' : '';
-    const hasApply  = j.apply && Object.keys(j.apply).length > 0;
-    return `
-      <div class="detected-row" data-jd-idx="${i}" style="cursor:pointer;">
-        <div class="detected-info">
-          <div class="detected-company-id" style="font-size:12px;font-weight:600;">${esc(title.slice(0, 60))}${autoBadge}</div>
-          <div class="detected-job-title">${esc(company)}${country ? ' · ' + esc(country) : ''}${hasApply ? ' · <span style="color:#4f4">apply✓</span>' : ''}</div>
-          <div class="detected-meta">${sources} sources · ${stageBadges || 'other'} · ${ts}</div>
-        </div>
-        <button class="btn-run done" data-jd-idx="${i}">View</button>
-      </div>`;
-  }).join('');
-
-  el.querySelectorAll('.btn-run').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      jdShowJob(jdAllJobs[+btn.dataset.jdIdx]);
-    });
-  });
-  el.querySelectorAll('.detected-row').forEach(row => {
-    row.addEventListener('click', () => jdShowJob(jdAllJobs[+row.dataset.jdIdx]));
-  });
-}
-
-// ── Capture ───────────────────────────────────────────────────────────────────
-function handleJdCapture() {
-  const statusEl = document.getElementById('jd-status');
-  const btn      = document.getElementById('btn-jd-capture');
-  statusEl.textContent = '⏳ Capturing — please wait…';
-  btn.disabled = true;
-
-  chrome.runtime.sendMessage({ action: 'runFullJobCapture' }, (res) => {
-    btn.disabled = false;
-    if (res?.success) {
-      statusEl.textContent = `✓ Captured — ${res.job._sources.length} sources merged`;
-      jdAllJobs.unshift(res.job);
-      // deduplicate by tabUrl
-      const seen = new Set();
-      jdAllJobs = jdAllJobs.filter(j => {
-        const k = j._uid || j._tabUrl;
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
-      document.getElementById('btn-jd-download').disabled = false;
-      jdRenderJobList();
-      jdShowJob(res.job);
-    } else {
-      statusEl.textContent = '✗ ' + (res?.error || 'Unknown error');
-      showToast(res?.error || 'Capture failed');
-    }
-  });
-}
-
-// ── Show a job in the result panel ────────────────────────────────────────────
-function jdShowJob(job) {
-  jdCurrentJob = job;
-  const title = job.job?.title || job.job?.info?.title || job._tabUrl || 'Job Details';
-  document.getElementById('jd-result-title').textContent = title.slice(0, 60);
-  document.getElementById('jd-result-panel').classList.remove('hidden');
-  // Update org-info tab label to company name
-  const orgBtn = document.querySelector('#jd-result-tabs .tab-btn[data-jdtab="orginfo"]');
-  if (orgBtn) orgBtn.textContent = job.company?.name || 'Org Info';
-
-  // Reset to overview tab
-  document.querySelectorAll('#jd-result-tabs .tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelector('#jd-result-tabs .tab-btn[data-jdtab="overview"]').classList.add('active');
-  jdActiveTab = 'overview';
-
-  jdRenderTab(job, 'overview');
-  document.getElementById('jd-result-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-// ── Render a tab's content ────────────────────────────────────────────────────
-function jdRenderTab(job, tab) {
-  const pre = document.getElementById('jd-result-content');
+// -- Shared drawer content renderer -------------------------------------------
+function renderDrawerContent(contentElId, entry, info, tab) {
+  const el = document.getElementById(contentElId);
   switch (tab) {
-    case 'overview':
-      pre.textContent = JSON.stringify({
-        _uid:         job._uid,
-        _cipher:      job._cipher,
-        _capturedAt:  job._capturedAt,
-        _autoCapture: job._autoCapture,
-        _tabUrl:      job._tabUrl,
-        _sourceCount: job._sources?.length,
-        _queryStatuses: job._queryStatuses,
-        job:          job.job,
-        skills:       job.skills,
-        location:     job.location,
-        activity:     job.activity,
-        apply:        Object.keys(job.apply || {}).length ? {
-          connectPrice:    job.apply.connectPrice,
-          questionCount:   job.apply.questions?.length,
-          milestoneCount:  job.apply.milestones?.length,
-          connectsBalance: job.apply.connectsBalance,
-        } : undefined,
-      }, null, 2);
-      break;
-    case 'buyer':
-      pre.textContent = JSON.stringify(job.buyer || {}, null, 2);
-      break;
-    case 'company':
-      pre.textContent = JSON.stringify(job.company || {}, null, 2);
-      break;
-    case 'stats':
-      pre.textContent = JSON.stringify(job.stats || {}, null, 2);
-      break;
-    case 'history':
-      pre.textContent = JSON.stringify(job.history?.length ? job.history : '(no work history captured)', null, 2);
-      break;
-    case 'proposals':
-      pre.textContent = JSON.stringify(job.proposals && Object.keys(job.proposals).length
-        ? job.proposals : '(no proposals data captured)', null, 2);
-      break;
-    case 'apply':
-      pre.textContent = JSON.stringify(job.apply && Object.keys(job.apply).length
-        ? job.apply : '(no apply-page data — open the Apply page on Upwork then recapture)', null, 2);
-      break;
-    case 'sources': {
-      // Build per-stage breakdown from _rawAll
-      const stageCounts = {};
-      for (const r of (job._rawAll || [])) {
-        const s = r.pageStage || 'other';
-        stageCounts[s] = (stageCounts[s] || 0) + 1;
-      }
-      const summary = {
-        total: job._sources?.length,
-        stagesBreakdown: stageCounts,
-        sources: job._sources,
-        queryStatuses: job._queryStatuses,
-        rawResponseCount: job._rawAll?.length,
-        rawAll: job._rawAll,
-      };
-      pre.textContent = JSON.stringify(summary, null, 2);
-      break;
-    }
-    case 'raw':
-      pre.textContent = JSON.stringify(job, null, 2);
-      break;
-    case 'orginfo': {
-      pre.textContent = 'Loading org info…';
-      chrome.storage.local.get(['companyLookups'], (stored) => {
-        const lookups = stored.companyLookups || [];
-        // Match by jobCiphertext first, then by companyId from buyer data
-        let lookup = lookups.find(l => l.jobCiphertext && job._cipher && l.jobCiphertext === job._cipher);
-        if (!lookup) {
-          const compId = job.buyer?.info?.company?.companyId || job.company?.companyId;
-          if (compId) lookup = lookups.find(l => l.companyId === compId);
-        }
-        if (!lookup) { pre.textContent = '(no org lookup found — run a Company Lookup for this job first)'; return; }
-        const cpResult = lookup.results?.find(r => r.alias === 'company-page');
-        if (!cpResult)          { pre.textContent = '(no company-page result in lookup)'; return; }
-        if (cpResult.skipped)   { pre.textContent = '(skipped: ' + cpResult.reason + ')'; return; }
-        if (cpResult.error)     { pre.textContent = 'Error: ' + cpResult.error; return; }
-        const staffsAuth = cpResult.data?.data?.agencyStaffsAuth;
-        if (!staffsAuth)        { pre.textContent = JSON.stringify(cpResult, null, 2); return; }
-        // profiles may be on company-page (old) or split into client-details (new)
-        const cdResult = lookup.results?.find(r => r.alias === 'client-details');
-        const profilesMap = {};
-        for (const p of ([...(cpResult.profiles || []), ...(cdResult?.profiles || [])])) {
-          if (p.personId) profilesMap[p.personId] = p;
-        }
-        const lines = [];
-        lines.push('Company ID : ' + cpResult.companyId);
-        lines.push('Total Staff: ' + staffsAuth.totalCount);
-        lines.push('');
-        for (const st of (staffsAuth.staffs || [])) {
-          const pd = st.personalData || {};
-          lines.push('▶ ' + (pd.name || '—') + '  [' + st.memberType + ']' + (st.agencyOwner ? '  (owner)' : ''));
-          lines.push('    Active    : ' + st.active);
-          lines.push('    Viewable  : ' + st.canBeViewed);
-          lines.push('    JSS       : ' + pd.jobSuccessScore);
-          lines.push('    Profile   : https://www.upwork.com/freelancers/' + pd.ciphertext);
-          if (pd.portrait) lines.push('    Portrait  : ' + pd.portrait);
-          const pEntry = profilesMap[pd.id];
-          if (pEntry) {
-            if (pEntry.error) {
-              lines.push('    Details   : error — ' + pEntry.error);
-            } else {
-              const tp = pEntry.data && pEntry.data.data && pEntry.data.data.talentVPDAuthProfile;
-              if (tp) {
-                const pp = tp.profile || {};
-                const ss = tp.stats || {};
-                const loc = pp.location || {};
-                if (pp.title)                                      lines.push('    Title     : ' + pp.title);
-                const locStr = [loc.city, loc.country].filter(Boolean).join(', ');
-                if (locStr)                                        lines.push('    Location  : ' + locStr);
-                const rate = ss.hourlyRate && ss.hourlyRate.node;
-                if (rate && rate.amount)                           lines.push('    Rate      : ' + rate.currencyCode + ' ' + rate.amount + '/hr');
-                if (ss.totalHours)                                 lines.push('    Hours     : ' + ss.totalHours);
-                if (ss.rating)                                     lines.push('    Rating    : ' + ss.rating + ' (' + (ss.totalFeedback || 0) + ' reviews)');
-                if (ss.topRatedStatus && ss.topRatedStatus !== 'not_eligible')
-                                                                   lines.push('    Top Rated : ' + ss.topRatedStatus);
-                if (ss.memberSince)                                lines.push('    Member    : ' + ss.memberSince);
-                const skills = (pp.skills || []).slice(0, 5).map(s => s.node && (s.node.prettyName || s.node.name)).filter(Boolean);
-                if (skills.length)                                 lines.push('    Skills    : ' + skills.join(', '));
-              }
-            }
-          }
-          lines.push('');
-        }
-        pre.textContent = lines.join('\n');
-      });
-      break;
-    }
-    default:
-      pre.textContent = '';
+    case 'overview': el.innerHTML = renderOverview(info);          break;
+    case 'client':   el.innerHTML = renderClient(info);            break;
+    case 'agency':   el.innerHTML = renderAgency(info, entry);     break;
+    case 'context':  el.innerHTML = renderJobContext(entry);        break;
+    case 'raw':      el.innerHTML = '<pre class="raw-json">' + esc(JSON.stringify(entry, null, 2)) + '</pre>'; break;
+    default:         el.innerHTML = '';
   }
 }
 
-// ── Download all captured jobs ────────────────────────────────────────────────
-function handleJdDownload() {
-  if (jdAllJobs.length === 0) { showToast('Nothing to download yet'); return; }
-  const json = JSON.stringify(jdAllJobs, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `upwork_job_details_${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast(`Downloaded ${jdAllJobs.length} job(s)`);
+function dtRow(key, val, isLink) {
+  if (val == null || val === '') val = '\u2014';
+  const valHtml = isLink && typeof val === 'string' && val.startsWith('http')
+    ? '<a href="' + esc(val) + '" target="_blank" class="detail-link">' + esc(val) + '</a>'
+    : esc(String(val));
+  return '<tr><td class="dt-key">' + esc(key) + '</td><td class="dt-val">' + valHtml + '</td></tr>';
 }
 
-// ── Clear ──────────────────────────────────────────────────────────────────────
-function handleJdClear() {
-  if (!confirm('Clear all captured job details?')) return;
-  chrome.runtime.sendMessage({ action: 'clearCapturedJobs' }, () => {
-    jdAllJobs    = [];
-    jdCurrentJob = null;
-    document.getElementById('jd-result-panel').classList.add('hidden');
-    document.getElementById('btn-jd-download').disabled = true;
-    document.getElementById('jd-status').textContent = '';
-    jdRenderJobList();
+function renderOverview(info) {
+  const budget = info.jobType === 'hourly' && (info.hourlyMin != null || info.hourlyMax != null)
+    ? '$' + (info.hourlyMin ?? '?') + '\u2013$' + (info.hourlyMax ?? '?') + '/hr'
+    : info.fixedAmt != null ? '$' + info.fixedAmt + ' ' + info.currency : '\u2014';
+  const link = info.jobCiphertext ? 'https://www.upwork.com/jobs/' + info.jobCiphertext : null;
+  const skillsHtml = info.skills.length
+    ? info.skills.map(s => '<span class="skill-tag">' + esc(s) + '</span>').join('')
+    : '<span style="color:#556">\u2014</span>';
+  const descHtml = info.description
+    ? '<div class="detail-section"><div class="detail-section-title">Description</div><div class="detail-desc">' + esc(info.description) + '</div></div>'
+    : '';
+  return '<div class="detail-section"><table class="detail-table">' +
+    dtRow('Title',     info.title) +
+    dtRow('Type',      info.jobType || '\u2014') +
+    dtRow('Budget',    budget) +
+    dtRow('Category',  info.category || '\u2014') +
+    dtRow('Location',  [info.city, info.country].filter(Boolean).join(', ') || '\u2014') +
+    dtRow('Proposals', info.proposals ?? '\u2014') +
+    dtRow('Scraped',   info.runAt ? new Date(info.runAt).toLocaleString() : '\u2014') +
+    dtRow('Link',      link || '\u2014', true) +
+    '</table></div>' +
+    '<div class="detail-section"><div class="detail-section-title">Skills</div><div class="detail-skills">' + skillsHtml + '</div></div>' +
+    descHtml;
+}
+
+function renderClient(info) {
+  const auth = (info._entry.results || []).find(r => r.alias === 'jobAuth-buyer' || r.alias === 'jobAuth-full');
+  const bi   = auth?.data?.data?.jobAuthDetails?.buyer?.info || {};
+  const co   = bi.company || {};
+  const st   = bi.stats   || {};
+  const loc  = bi.location || {};
+  return '<div class="detail-section"><table class="detail-table">' +
+    dtRow('Company',      co.name || '\u2014') +
+    dtRow('Country',      [loc.city, loc.country].filter(Boolean).join(', ') || '\u2014') +
+    dtRow('Member Since', co.memberSince || bi.memberSince || '\u2014') +
+    dtRow('Total Spent',  fmtSpent(st.totalCharges?.amount ?? st.totalSpent?.amount) || '\u2014') +
+    dtRow('Jobs Posted',  st.totalJobsPosted ?? '\u2014') +
+    dtRow('Hire Rate',    st.percentHired != null ? Math.round(st.percentHired * 100) + '%' : '\u2014') +
+    dtRow('Rating',       st.score != null ? (+st.score).toFixed(2) : '\u2014') +
+    dtRow('Reviews',      st.feedbackCount ?? st.totalFeedback ?? '\u2014') +
+    dtRow('Verified',     co.isPaymentVerified != null ? (co.isPaymentVerified ? '\u2713 Yes' : '\u2717 No') : '\u2014') +
+    '</table></div>';
+}
+
+function renderAgency(info, entry) {
+  let html = '';
+  if (info.agencies.length) {
+    for (const ag of info.agencies) {
+      html += '<div class="agency-card">' +
+        '<div class="agency-name">' + esc(ag.name || 'Agency') + '</div>' +
+        '<table class="detail-table">' +
+        (ag.id ? dtRow('Link', 'https://www.upwork.com/agencies/' + ag.id + '/', true) : '') +
+        (ag.score != null ? dtRow('Score', ag.score) : '') +
+        (ag.totalFeedback != null ? dtRow('Reviews', ag.totalFeedback) : '') +
+        (ag.totalHours != null ? dtRow('Hours', ag.totalHours) : '') +
+        (ag.nSS100BwScore != null ? dtRow('NSS', ag.nSS100BwScore) : '') +
+        (ag.topRatedStatus ? dtRow('Top Rated', ag.topRatedStatus) : '') +
+        '</table></div>';
+    }
+  } else {
+    html += '<div class="empty" style="padding:16px">No agency data found.</div>';
+  }
+  if (info.staffs.length) {
+    html += '<div class="detail-section-title" style="margin:12px 0 6px">Staff (' + info.staffs.length + ')</div>';
+    for (const st of info.staffs) {
+      const pd = st.personalData || {};
+      html += '<div class="staff-row">' +
+        '<div class="staff-name">' + esc(pd.name || '\u2014') + '</div>' +
+        '<div class="staff-meta">' +
+          (st.memberType ? '<span class="staff-badge">' + esc(st.memberType) + '</span>' : '') +
+          (st.agencyOwner ? '<span class="staff-badge owner">Owner</span>' : '') +
+          '<span class="staff-jss">JSS: ' + (pd.jobSuccessScore ?? '\u2014') + '</span>' +
+          (pd.ciphertext ? '<a href="https://www.upwork.com/freelancers/' + esc(pd.ciphertext) + '" target="_blank" class="detail-link" style="font-size:10px">Profile \u2192</a>' : '') +
+        '</div></div>';
+    }
+  }
+  return html;
+}
+
+function renderJobContext(entry) {
+  const ctxR = (entry.results || []).find(r => r.alias === 'fetchjobdetailsandcontext');
+  if (!ctxR || ctxR.skipped) return '<div class="empty" style="padding:16px">No job context data.</div>';
+  if (ctxR.error) return '<div class="empty" style="padding:16px;color:#e07070">Error: ' + esc(ctxR.error) + '</div>';
+  return '<pre class="raw-json">' + esc(JSON.stringify(ctxR.data || ctxR, null, 2)) + '</pre>';
+}
+
+// -- Run Scrape ---------------------------------------------------------------
+function handleRunScrape() {
+  const btn    = document.getElementById('btn-run-scrape');
+  const status = document.getElementById('scrape-status');
+  const url     = EXT_CONFIG.SEARCH_URL;
+  const maxJobs = EXT_CONFIG.MAX_JOBS;
+
+  btn.disabled = true;
+  btn.textContent = '\u23F3 Scraping\u2026';
+  status.textContent = 'Starting\u2026';
+
+    // Mark this session as having a scrape so loadSearchJobs() shows real data
+    scrapeRunThisSession = true;
+
+    // Clear previous results in storage and UI, then switch to Search tab
+    chrome.storage.local.set({ lastSearchJobs: [] }, () => {
+      searchJobs = [];
+      renderSearchGrid();
+      document.getElementById('btn-search-download').disabled = true;
+      document.getElementById('search-count').textContent = 'Scraping\u2026 0 jobs so far';
+
+      // Switch to Search tab
+      const searchTab = document.querySelector('.top-tab[data-panel="search"]');
+      if (searchTab) searchTab.click();
+
+      chrome.runtime.sendMessage({ action: 'runSearchLookup', searchUrl: url, maxJobs }, (res) => {
+        btn.disabled = false;
+        btn.textContent = '\u25B6 Run Scrape';
+        if (chrome.runtime.lastError) {
+          status.textContent = '\u2717 ' + chrome.runtime.lastError.message;
+          showToast('Error: ' + chrome.runtime.lastError.message);
+          return;
+        }
+        if (!res) { status.textContent = '\u2717 No response'; return; }
+        if (!res.success) {
+          status.textContent = '\u2717 ' + (res.error || 'Unknown error');
+          showToast(res.error || 'Scrape failed');
+          return;
+        }
+        if (res.started) {
+          status.textContent = '\u23F3 Scraping\u2026 results appear as processed';
+          showToast('Scraping started \u2014 cards appear as processed');
+          return;
+        }
+        const pages = res.pages || 1;
+        status.textContent = '\u23F3 Scraping ' + res.found + ' jobs across ' + pages + ' page' + (pages !== 1 ? 's' : '') + '\u2026';
+        showToast('Scraping ' + res.found + ' jobs \u2014 cards appear as processed');
+      });
+    });
+}
+
+// -- Download / Clear (Jobs tab) ----------------------------------------------
+function handleJobsDownload() {
+  if (!allJobs.length) { showToast('Nothing to download'); return; }
+  const blob = new Blob([JSON.stringify(allJobs, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'), { href: url, download: 'upwork_jobs_' + Date.now() + '.json' }).click();
+  URL.revokeObjectURL(url);
+  showToast('Downloaded ' + allJobs.length + ' job(s)');
+}
+
+function handleJobsClear() {
+  if (!confirm('Clear all scraped jobs?')) return;
+  chrome.storage.local.set({ companyLookups: [] }, () => {
+    allJobs = [];
+    document.getElementById('btn-jobs-download').disabled = true;
+    document.getElementById('job-drawer').classList.add('hidden');
+    drawerJob = null;
+    renderJobsList();
     showToast('Cleared');
   });
 }
 
-// -------------------------------------------------------------------------------
-// CONFIG PANEL
-// -------------------------------------------------------------------------------
+// -- Download / Clear (Search tab) --------------------------------------------
+function handleSearchDownload() {
+  if (!searchJobs.length) { showToast('Nothing to download'); return; }
+  const blob = new Blob([JSON.stringify(searchJobs, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'), { href: url, download: 'upwork_search_' + Date.now() + '.json' }).click();
+  URL.revokeObjectURL(url);
+  showToast('Downloaded ' + searchJobs.length + ' job(s)');
+}
 
-let cfgInited = false;
+function handleSearchClear() {
+  if (!confirm('Clear search results?')) return;
+  scrapeRunThisSession = false;
+  chrome.storage.local.set({ lastSearchJobs: [] }, () => {
+    searchJobs = [];
+    document.getElementById('btn-search-download').disabled = true;
+    document.getElementById('search-drawer').classList.add('hidden');
+    searchDrawerJob = null;
+    renderSearchGrid();
+    document.getElementById('search-count').textContent = 'No results yet \u2014 click \u25B6 Run Scrape in Jobs tab';
+    showToast('Cleared');
+  });
+}
 
+// -- Config panel -------------------------------------------------------------
 function initConfigPanel() {
-  if (cfgInited) {
-    // Refresh token status every time tab is opened
-    refreshTokenStatus();
-    return;
-  }
-  cfgInited = true;
-
-  // -- Load saved values ------------------------------------------------------
-  const DEFAULT_SEARCH_URL = 'https://www.upwork.com/nx/search/jobs/?nbs=1&q=n8n';
-  chrome.storage.local.get(['webhookUrl', 'searchUrl'], (s) => {
-    if (s.webhookUrl) document.getElementById('webhook-url').value = s.webhookUrl;
-    const searchUrl = s.searchUrl || DEFAULT_SEARCH_URL;
-    document.getElementById('cfg-search-url').value = searchUrl;
-    if (!s.searchUrl) chrome.storage.local.set({ searchUrl: DEFAULT_SEARCH_URL });
-  });
-
-  // -- Webhook URL save -------------------------------------------------------
-  document.getElementById('btn-webhook-save').addEventListener('click', () => {
-    const url = document.getElementById('webhook-url').value.trim();
-    const st  = document.getElementById('webhook-status');
-    chrome.storage.local.set({ webhookUrl: url || null }, () => {
-      st.textContent = url ? '? Saved' : 'Cleared';
-      setTimeout(() => { st.textContent = ''; }, 2000);
-    });
-  });
-
-  // -- Search URL save --------------------------------------------------------
-  document.getElementById('cfg-save-search-url').addEventListener('click', () => {
-    const url = document.getElementById('cfg-search-url').value.trim();
-    chrome.storage.local.set({ searchUrl: url || null }, () => showToast(url ? 'Search URL saved' : 'Cleared'));
-  });
-
-  // -- Open search URL in new tab ---------------------------------------------
-  document.getElementById('cfg-open-search').addEventListener('click', () => {
-    const url = document.getElementById('cfg-search-url').value.trim();
-    if (!url) { showToast('Enter a search URL first'); return; }
-    // Save it while we're here
-    chrome.storage.local.set({ searchUrl: url });
-    chrome.runtime.sendMessage({ action: 'openSearchTab', url }, (res) => {
-      if (res?.success) showToast('Opened search tab � browse jobs, then click Extract All');
-    });
-  });
-
-  // -- Extract all jobs from captured requests --------------------------------
-  document.getElementById('cfg-extract-jobs').addEventListener('click', handleExtractJobs);
-  document.getElementById('cfg-run-search-lookup').addEventListener('click', handleSearchLookup);
-
-  // -- Token status -----------------------------------------------------------
   refreshTokenStatus();
+  if (cfgInited) return;
+  cfgInited = true;
+}
+
+function cfgLog(msg) {
+  const el = document.getElementById('cfg-log');
+  if (!el) return;
+  el.textContent = (el.textContent ? el.textContent + '\n' : '') + new Date().toLocaleTimeString() + '  ' + msg;
+  el.scrollTop = el.scrollHeight;
 }
 
 function refreshTokenStatus() {
   chrome.runtime.sendMessage({ action: 'getSessionTokens' }, (res) => {
     if (!res) return;
     const map = {
-      'tok-search':  [res.hasSearchTok,  'search'],
-      'tok-job':     [res.hasJobTok,     'job'],
-      'tok-global':  [res.hasGlobalTok,  'global'],
-      'tok-tenant':  [res.hasTenantId,   'tenant'],
-      'tok-xsrf':    [res.hasXsrf,       'xsrf'],
-      'tok-agency':  [res.hasAgencyTok,  'agency'],
+      'tok-search': [res.hasSearchTok, 'search'],
+      'tok-job':    [res.hasJobTok,    'job'],
+      'tok-global': [res.hasGlobalTok, 'global'],
+      'tok-tenant': [res.hasTenantId,  'tenant'],
+      'tok-xsrf':   [res.hasXsrf,      'xsrf'],
+      'tok-agency': [res.hasAgencyTok, 'agency'],
     };
     for (const [id, [ok, label]] of Object.entries(map)) {
       const el = document.getElementById(id);
       if (!el) continue;
-      el.textContent = (ok ? '?? ' : '?? ') + label;
+      el.textContent = (ok ? '\uD83D\uDFE2 ' : '\uD83D\uDD34 ') + label;
       el.classList.toggle('ok', !!ok);
-    }
-  });
-}
-
-function cfgLog(msg) {
-  const el = document.getElementById('cfg-log');
-  const line = new Date().toLocaleTimeString() + '  ' + msg;
-  el.textContent = (el.textContent ? el.textContent + '\n' : '') + line;
-  el.scrollTop = el.scrollHeight;
-}
-
-function handleSearchLookup() {
-  console.log('[popup] handleSearchLookup called');
-  const urlInput = document.getElementById('cfg-search-url');
-  const url = urlInput ? urlInput.value.trim() : '';
-  console.log('[popup] search url:', url);
-  if (!url || !url.includes('upwork.com')) {
-    showToast('Enter a valid Upwork search URL in the Search URL field first');
-    cfgLog('ERROR: enter a valid Upwork search URL first');
-    return;
-  }
-  const btn  = document.getElementById('cfg-run-search-lookup');
-  const stat = document.getElementById('cfg-extract-status');
-  btn.disabled = true;
-  btn.textContent = '⏳ Running…';
-  stat.textContent = 'Opening search page, collecting jobs…';
-  cfgLog('Starting search lookup: ' + url);
-
-  chrome.runtime.sendMessage({ action: 'runSearchLookup', searchUrl: url }, (res) => {
-    if (!res) {
-      btn.disabled = false;
-      btn.textContent = '▶ Run Lookup on Search URL';
-      stat.textContent = '✗ No response from background';
-      cfgLog('ERROR: no response');
-      return;
-    }
-    if (!res.success) {
-      btn.disabled = false;
-      btn.textContent = '▶ Run Lookup on Search URL';
-      stat.textContent = '✗ ' + (res.error || 'Unknown error');
-      cfgLog('ERROR: ' + (res.error || 'Unknown error'));
-      return;
-    }
-    stat.textContent = `✓ Found ${res.found} job(s) — running lookups in background, results sent to webhook`;
-    cfgLog(`Found ${res.found} jobs, processing sequentially in background…`);
-    // Re-enable after a delay (lookups continue async in background)
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = '▶ Run Lookup on Search URL';
-      jdLoadJobs();
-    }, 5000);
-  });
-}
-
-function handleExtractJobs() {  const btn  = document.getElementById('cfg-extract-jobs');
-  const stat = document.getElementById('cfg-extract-status');
-  btn.disabled = true;
-  btn.textContent = '? Extracting�';
-  stat.textContent = 'Scanning captured requests�';
-  cfgLog('Starting extraction from captured requests�');
-
-  chrome.runtime.sendMessage({ action: 'extractJobsFromRequests' }, (res) => {
-    btn.disabled = false;
-    btn.textContent = '? Extract All Jobs from Captured Requests';
-
-    if (!res) {
-      stat.textContent = '? No response from background';
-      cfgLog('ERROR: no response');
-      return;
-    }
-    if (!res.success) {
-      stat.textContent = '? ' + (res.error || 'Unknown error');
-      cfgLog('ERROR: ' + (res.error || 'Unknown error'));
-      return;
-    }
-
-    const msg = `? Added ${res.added} new job${res.added !== 1 ? 's' : ''} (${res.total} total in store)`;
-    stat.textContent = msg;
-    cfgLog(msg);
-
-    if (res.added > 0) {
-      // Refresh the jobs panel list
-      jdLoadJobs();
-      showToast(`${res.added} new job${res.added !== 1 ? 's' : ''} extracted`);
-    } else {
-      cfgLog('Tip: browse Upwork search & job pages first, then extract.');
     }
   });
 }
