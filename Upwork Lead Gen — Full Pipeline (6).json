@@ -1,0 +1,432 @@
+{
+  "name": "Upwork Lead Gen — Full Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upwork-leads",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 480],
+      "id": "webhook-node",
+      "name": "Webhook",
+      "webhookId": "6c6d69d0-3bae-48f1-9d6e-bbebbece62df"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 1 — EXTRACT JOB DETAILS + CLIENT NAME\n// ============================================================\nconst body = $input.first().json.body;\n\n// ── Job info (from top-level payload fields — v2-hybrid) ────\nconst jobTitle       = body.jobTitle ?? 'N/A';\nconst jobDescription = body.description ?? '';\nconst jobType        = body.jobType ?? 'N/A';\nconst jobCiphertext  = body.jobCiphertext ?? '';\nconst jobUrl         = jobCiphertext ? `https://www.upwork.com/jobs/${jobCiphertext}` : 'N/A';\nconst jobStatus      = body.jobStatus ?? 'N/A';\nconst jobCategory    = body.jobCategory ?? 'N/A';\nconst postedOn       = body.postedOn ?? 'N/A';\nconst skills         = (body.skills ?? []).join(', ');\n\n// Budget\nconst hourlyMin      = body.hourlyBudget?.hourlyBudgetMin ?? null;\nconst hourlyMax      = body.hourlyBudget?.hourlyBudgetMax ?? null;\nconst budget         = body.budget?.amount ?? null;\nconst budgetCurrency = body.budget?.currencyCode ?? 'USD';\n\n// ── Client stats (from top-level payload) ───────────────────\nconst clientCountry       = body.clientCountry ?? 'N/A';\nconst clientCity          = body.clientCity ?? 'N/A';\nconst clientScore         = body.clientScore ?? 0;\nconst totalJobsPosted     = body.totalJobsPosted ?? 0;\nconst totalHired          = body.totalHired ?? 0;\nconst totalSpent          = body.totalSpent ?? 0;\nconst totalHoursWorked    = body.totalHoursWorked ?? 0;\nconst feedbackCount       = body.feedbackCount ?? 0;\nconst activeContracts     = body.activeContracts ?? 0;\nconst paymentVerified     = body.paymentVerified ?? false;\nconst enterprise          = body.enterprise ?? false;\nconst totalApplicants     = body.totalApplicants ?? 0;\nconst totalInvitedToInterview = body.totalInvitedToInterview ?? 0;\nconst numberOfPositions   = body.numberOfPositions ?? 1;\nconst lastBuyerActivity   = body.lastBuyerActivity ?? 'N/A';\nconst companyContractDate = body.companyContractDate ?? null;\nconst companyId           = body.companyId ?? null;\n\n// ── Company name from clientCompanyMetadata (_raw) ──────────\nconst metaName = body._raw?.clientCompanyMetadata?.data?.clientCompanyMetadata?.name ?? null;\n// Also check top-level companyName sent by extension\nconst topLevelName = body.companyName ?? null;\n// Use metaName first (most reliable), then top-level\nconst rawClientName = metaName ?? topLevelName ?? null;\n\n// ── Work history for AI context ─────────────────────────────\nconst workHistory = body._raw?.jobAuthDetails?.data?.jobAuthDetails?.buyer?.workHistory ?? [];\nconst workHistoryTitles = workHistory\n  .map(w => w.jobInfo?.title)\n  .filter(Boolean)\n  .slice(0, 15)\n  .join(' | ');\nconst workHistoryContractors = workHistory\n  .map(w => w.contractorInfo?.contractorName)\n  .filter(Boolean)\n  .slice(0, 10)\n  .join(', ');\nconst feedbackComments = workHistory\n  .flatMap(w => [w.feedback?.comment, w.feedbackToClient?.comment])\n  .filter(Boolean)\n  .join(' ');\n\n// ── Agency staffs ────────────────────────────────────────────\nconst staffs = (body._raw?.agencyStaffs?.data?.agencyStaffsAuth?.staffs ?? []).map(s => ({\n  name: s.personalData?.name ?? 'Unknown',\n  ciphertext: s.personalData?.ciphertext ?? '',\n  profileUrl: s.personalData?.ciphertext\n    ? `https://www.upwork.com/freelancers/${s.personalData.ciphertext}`\n    : '',\n  topRated: s.personalData?.topRatedStatus,\n  memberType: s.memberType\n}));\n\n// ── clientDetails (freelancer profiles enrichment) ──────────\nconst clientDetails = body.clientDetails ?? [];\nconst clientsWithAgencies = clientDetails\n  .filter(c => c.agencies && c.agencies.length > 0)\n  .flatMap(c => c.agencies.map(a => ({\n    clientName: c.name,\n    agencyName: a.name ?? null\n  })));\nconst agencyCompanyName = clientsWithAgencies[0]?.agencyName ?? null;\n\n// ── Open jobs ────────────────────────────────────────────────\nconst openJobsList = (body._raw?.jobAuthDetails?.data?.jobAuthDetails?.buyer?.info?.jobs?.openJobs ?? [])\n  .map(j => j.title).filter(Boolean);\n\nreturn [{\n  json: {\n    // Job\n    jobTitle,\n    jobDescription,\n    jobUrl,\n    jobType,\n    jobStatus,\n    jobCategory,\n    postedOn,\n    skills,\n    hourlyMin,\n    hourlyMax,\n    budget,\n    budgetCurrency,\n    // Client\n    clientCountry,\n    clientCity,\n    clientScore,\n    totalJobsPosted,\n    totalHired,\n    totalSpent,\n    totalHoursWorked,\n    feedbackCount,\n    activeContracts,\n    paymentVerified,\n    enterprise,\n    totalApplicants,\n    totalInvitedToInterview,\n    numberOfPositions,\n    lastBuyerActivity,\n    companyContractDate,\n    companyId,\n    // Name to classify\n    rawClientName,\n    agencyCompanyName,\n    // Context for AI company reveal\n    workHistoryTitles,\n    workHistoryContractors,\n    feedbackComments: feedbackComments.slice(0, 500),\n    openJobsList: openJobsList.join(' | '),\n    // Staff\n    staffs: JSON.stringify(staffs),\n    clientsWithAgencies: JSON.stringify(clientsWithAgencies)\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 480],
+      "id": "extract-signals",
+      "name": "Extract Job + Name"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You must classify the following name and respond ONLY with valid JSON.\n\nNAME: {{ $json.rawClientName }}\n\nIs this a COMPANY name or a PERSON name?\n\nRules:\n- If the name contains LLC, Inc, Ltd, Corp, GmbH, SAS, Agency, Studio, Group, Labs, Solutions, Technologies, Services, Consulting, Co., or any business suffix → it is a COMPANY\n- If the name looks like a first name + last name (e.g. \"John Smith\", \"Ahmed Ben Yahia\") → it is a PERSON\n- If ambiguous, lean toward COMPANY\n- If rawClientName is null or empty → respond with type: \"unknown\"\n\nRespond ONLY with this exact JSON, no markdown:\n{\"type\": \"company\", \"name\": \"{{ $json.rawClientName }}\"}  \nor  \n{\"type\": \"person\", \"name\": \"{{ $json.rawClientName }}\"}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a name classifier. You respond ONLY with valid JSON. No explanation, no markdown, just the JSON object."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [680, 480],
+      "id": "classify-name-agent",
+      "name": "AI: Person or Company?"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [680, 680],
+      "id": "gemini-classify",
+      "name": "Gemini (Classifier)",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "RvykAVn0EWeql49Y",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\"type\": \"company\", \"name\": \"Acme Corp\"}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [820, 700],
+      "id": "structured-parser-classify",
+      "name": "Structured Parser (Classify)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "is-company",
+              "leftValue": "={{ $json.output.type }}",
+              "rightValue": "company",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [960, 480],
+      "id": "is-company-check",
+      "name": "Is Company?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Company path — AI agent only carries 'output'; get original fields from Extract node\nconst aiOut = $input.first().json;\nconst orig  = $('Extract Job + Name').first().json;\nconst classifiedName = aiOut.output?.name ?? orig.rawClientName ?? orig.agencyCompanyName ?? 'Unknown';\nreturn [{\n  json: {\n    ...orig,\n    companyName: classifiedName,\n    companySource: 'metadata',\n    nameType: 'company'\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 320],
+      "id": "set-company-name",
+      "name": "Set Company Name"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Try to identify the real company name behind this Upwork client.\n\nThe client's Upwork display name is: {{ $json.rawClientName }}\nThis appears to be a PERSON name, not a company name.\n\nJOB TITLE: {{ $json.jobTitle }}\n\nJOB DESCRIPTION (first 800 chars):\n{{ $json.jobDescription.slice(0, 800) }}\n\nJOB CATEGORY: {{ $json.jobCategory }}\n\nPAST JOB TITLES HIRED FOR:\n{{ $json.workHistoryTitles }}\n\nPAST CONTRACTOR NAMES:\n{{ $json.workHistoryContractors }}\n\nFEEDBACK COMMENTS:\n{{ $json.feedbackComments }}\n\nOPEN JOBS:\n{{ $json.openJobsList }}\n\nLOCATION: {{ $json.clientCity }}, {{ $json.clientCountry }}\n\nBased on all this information, what is the most likely company name this person works for or owns?\nIf you cannot determine a company name with reasonable confidence, return the person's name as-is.\n\nRespond ONLY with valid JSON, no markdown:\n{\"companyName\": \"Acme Corp\", \"confidence\": \"high\", \"reasoning\": \"brief reason\"}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a business intelligence analyst. Given context about an Upwork client, you identify the company they represent. Respond ONLY with valid JSON."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [1180, 640],
+      "id": "reveal-company-agent",
+      "name": "AI: Reveal Company Name"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [1180, 840],
+      "id": "gemini-reveal",
+      "name": "Gemini (Reveal)",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "RvykAVn0EWeql49Y",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\"companyName\": \"Acme Corp\", \"confidence\": \"high\", \"reasoning\": \"Job descriptions mention Acme Corp branding\"}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [1320, 860],
+      "id": "structured-parser-reveal",
+      "name": "Structured Parser (Reveal)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Person path — AI agent only carries 'output'; get original fields from Extract node\nconst aiOut = $input.first().json;\nconst orig  = $('Extract Job + Name').first().json;\nconst revealedName = aiOut.output?.companyName ?? orig.rawClientName ?? 'Unknown';\nconst confidence   = aiOut.output?.confidence ?? 'low';\nconst reasoning    = aiOut.output?.reasoning ?? '';\nreturn [{\n  json: {\n    ...orig,\n    companyName: revealedName,\n    companySource: 'ai-revealed',\n    aiRevealConfidence: confidence,\n    aiRevealReasoning: reasoning,\n    nameType: 'person',\n    personName: orig.rawClientName\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 640],
+      "id": "set-revealed-name",
+      "name": "Set Revealed Name"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1660, 480],
+      "id": "merge-paths",
+      "name": "Merge Paths"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 2 — FORMAT LEAD + TELEGRAM MESSAGE\n// ============================================================\nconst d = $input.first().json;\n\n// Parse staffs\nlet staffs = [];\ntry { staffs = JSON.parse(d.staffs || '[]'); } catch(e) {}\n\n// ── Lead scoring ─────────────────────────────────────────────\nlet score = 0;\nconst reasons = [];\n\nif (d.paymentVerified)          { score += 30; reasons.push('✅ Payment verified'); }\nif (d.totalSpent > 10000)        { score += 20; reasons.push(`💰 $${(d.totalSpent/1000).toFixed(1)}K spent`); }\nelse if (d.totalSpent > 1000)    { score += 10; reasons.push(`💰 $${Math.round(d.totalSpent)} spent`); }\nif (d.clientScore >= 4.5)        { score += 15; reasons.push(`⭐ ${d.clientScore} rating`); }\nif (d.totalHired > 5)            { score += 10; reasons.push(`🤝 ${d.totalHired} hires`); }\nif (d.totalApplicants < 30)      { score += 10; reasons.push(`🎯 Only ${d.totalApplicants} applicants`); }\nif (d.budget > 500 || d.hourlyMax > 50) { score += 15; reasons.push('💵 Good budget'); }\n\nconst grade = score >= 70 ? '🔥 HOT' : score >= 45 ? '🟡 WARM' : '🔵 COLD';\n\n// ── Budget string ────────────────────────────────────────────\nlet budgetStr = 'N/A';\nif (d.hourlyMin && d.hourlyMax)  budgetStr = `$${d.hourlyMin}–$${d.hourlyMax}/hr`;\nelse if (d.budget)               budgetStr = `$${d.budget} ${d.jobType === 'FIXED' ? 'fixed' : ''}`;\n\n// ── Spent string ─────────────────────────────────────────────\nconst spentStr = (d.totalSpent ?? 0) >= 1000\n  ? `$${((d.totalSpent ?? 0)/1000).toFixed(1)}K`\n  : `$${(d.totalSpent ?? 0)}`;\n\n// ── Staff lines ───────────────────────────────────────────────\nconst staffLines = staffs\n  .map(s => {\n    const badge = s.topRated === 'top_rated' ? ' ⭐' : '';\n    return s.profileUrl\n      ? `  👤 <a href=\"${s.profileUrl}\">${s.name}</a>${badge}`\n      : `  👤 ${s.name}${badge}`;\n  }).join('\\n') || '  No profiles found';\n\n// ── Company name + source badge ───────────────────────────────\nconst nameSourceBadge = d.companySource === 'ai-revealed'\n  ? ` <i>(AI revealed, ${d.aiRevealConfidence ?? 'low'} confidence)</i>`\n  : ` <i>(${d.companySource ?? 'api'})</i>`;\n\nconst personLine = d.nameType === 'person'\n  ? `\\n• <b>Contact:</b> ${d.personName}`\n  : '';\n\n// ── Description truncated ────────────────────────────────────\nconst desc = (d.jobDescription || '').slice(0, 500).trim() +\n  (d.jobDescription?.length > 500 ? '...' : '');\n\n// ── Build Telegram message ────────────────────────────────────\nconst lines = [\n  `${grade} <b>New Upwork Lead</b>`,\n  ``,\n  `📌 <b><a href=\"${d.jobUrl}\">${d.jobTitle}</a></b>`,\n  ``,\n  `📝 ${desc}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `💼 <b>Job Details</b>`,\n  `• <b>Type:</b> ${d.jobType}`,\n  `• <b>Category:</b> ${d.jobCategory}`,\n  `• <b>Budget:</b> ${budgetStr}`,\n  `• <b>Skills:</b> ${d.skills || 'N/A'}`,\n  `• <b>Posted:</b> ${new Date(d.postedOn).toLocaleDateString()}`,\n  `• <b>Applicants:</b> ${d.totalApplicants} | Interviews: ${d.totalInvitedToInterview}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `🏢 <b>Client Info</b>`,\n  `• <b>Company:</b> ${d.companyName || 'Unknown'}${nameSourceBadge}${personLine}`,\n  `• <b>Location:</b> ${d.clientCity}, ${d.clientCountry}`,\n  `• <b>Member since:</b> ${d.companyContractDate ? new Date(d.companyContractDate).getFullYear() : 'N/A'}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `📊 <b>Client History</b>`,\n  `• <b>Total Spent:</b> ${spentStr}`,\n  `• <b>Rating:</b> ${d.clientScore}/5 (${d.feedbackCount} reviews)`,\n  `• <b>Jobs Posted:</b> ${d.totalJobsPosted} | Hired: ${d.totalHired}`,\n  `• <b>Active Contracts:</b> ${d.activeContracts}`,\n  `• <b>Hours Logged:</b> ${d.totalHoursWorked}`,\n  `• <b>Payment:</b> ${d.paymentVerified ? '✅ Verified' : '❌ Not verified'}`,\n  `• <b>Enterprise:</b> ${d.enterprise ? '✅ Yes' : 'No'}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `👥 <b>Team Members</b>`,\n  staffLines,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `🏆 <b>Lead Score: ${score}/100 — ${grade}</b>`,\n  reasons.join(' | '),\n].filter(l => l !== null).join('\\n');\n\nconst message = lines.length > 4096 ? lines.slice(0, 4090) + '...' : lines;\n\nreturn [{\n  json: {\n    ...d,\n    leadScore: score,\n    leadGrade: grade,\n    message,\n    budgetFormatted: budgetStr,\n    spentFormatted: spentStr,\n    staffFormatted: staffs.map(s => s.name).join(', '),\n    scoreReasons: reasons.join(', ')\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1880, 480],
+      "id": "format-lead",
+      "name": "Format Lead + Message"
+    },
+    {
+      "parameters": {
+        "chatId": "7122639561",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2100, 360],
+      "id": "send-telegram",
+      "name": "Send to Telegram",
+      "webhookId": "5a18ae45-f161-4120-aea8-c37ede9f59f3",
+      "credentials": {
+        "telegramApi": {
+          "id": "iYQ8zI09FzoQr0dG",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/1paAn8eIByuKcflmwvRgrV7vjrAQU5-AfAXaSlYSCbUc/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Feuille 1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1paAn8eIByuKcflmwvRgrV7vjrAQU5-AfAXaSlYSCbUc/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "jobTitle": "={{ $json.jobTitle }}",
+            "jobUrl": "={{ $json.jobUrl }}",
+            "jobType": "={{ $json.jobType }}",
+            "jobCategory": "={{ $json.jobCategory }}",
+            "postedOn": "={{ $json.postedOn }}",
+            "skills": "={{ $json.skills }}",
+            "budgetFormatted": "={{ $json.budgetFormatted }}",
+            "companyName": "={{ $json.companyName }}",
+            "companySource": "={{ $json.companySource }}",
+            "nameType": "={{ $json.nameType }}",
+            "personName": "={{ $json.personName ?? '' }}",
+            "aiRevealConfidence": "={{ $json.aiRevealConfidence ?? '' }}",
+            "aiRevealReasoning": "={{ $json.aiRevealReasoning ?? '' }}",
+            "clientCountry": "={{ $json.clientCountry }}",
+            "clientCity": "={{ $json.clientCity }}",
+            "clientScore": "={{ $json.clientScore }}",
+            "totalJobsPosted": "={{ $json.totalJobsPosted }}",
+            "totalHired": "={{ $json.totalHired }}",
+            "spentFormatted": "={{ $json.spentFormatted }}",
+            "feedbackCount": "={{ $json.feedbackCount }}",
+            "activeContracts": "={{ $json.activeContracts }}",
+            "paymentVerified": "={{ $json.paymentVerified }}",
+            "enterprise": "={{ $json.enterprise }}",
+            "totalApplicants": "={{ $json.totalApplicants }}",
+            "leadScore": "={{ $json.leadScore }}",
+            "leadGrade": "={{ $json.leadGrade }}",
+            "staffFormatted": "={{ $json.staffFormatted }}",
+            "scoreReasons": "={{ $json.scoreReasons }}",
+            "jobDescription": "={{ $json.jobDescription }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [2100, 600],
+      "id": "append-sheet",
+      "name": "Append to Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "VcJVf8m93xZFsBHl",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "n8n-production-3b5ff.up.railway.app",
+            "content-type": "application/json",
+            "origin": "chrome-extension://aiphkalmhmhhojifcjnhimaoblnjkkie"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "_version": "v2-hybrid",
+            "source": "search",
+            "query": "full stack",
+            "jobCiphertext": "~022046614350981161621",
+            "jobTitle": "Full stack and Web app developer",
+            "jobType": "HOURLY",
+            "jobCategory": "Web Development",
+            "description": "Full-Stack Web & Mobile Developer (Contract – 12 Weeks)\n\nWe are building a production-ready web application with a clear scope, defined requirements, and a fixed 12-week delivery timeline.",
+            "budget": { "amount": 0, "currencyCode": "USD" },
+            "hourlyBudget": { "hourlyBudgetMin": 15, "hourlyBudgetMax": 22, "hourlyBudgetType": "MANUAL" },
+            "postedOn": "2026-04-21T15:37:40.555Z",
+            "skills": ["React", "JavaScript", "Full-Stack Development"],
+            "companyId": "1356396917902204929",
+            "companyName": "Cail LLC",
+            "companyContractDate": "2021-02-02T00:00:00.000Z",
+            "clientCountry": "United States",
+            "clientCity": "Mansfield",
+            "clientScore": 5,
+            "totalJobsPosted": 15,
+            "totalHired": 14,
+            "totalSpent": 28019.03,
+            "totalHoursWorked": 536.83,
+            "feedbackCount": 6,
+            "activeContracts": 4,
+            "paymentVerified": true,
+            "enterprise": false,
+            "totalApplicants": 164,
+            "totalInvitedToInterview": 0,
+            "numberOfPositions": 1,
+            "lastBuyerActivity": "2026-04-21T15:37:40.529Z",
+            "jobStatus": "ACTIVE",
+            "clientDetails": [],
+            "runAt": "2026-04-21T19:51:17.949Z",
+            "_raw": {
+              "jobAuthDetails": {
+                "data": {
+                  "jobAuthDetails": {
+                    "buyer": {
+                      "enterprise": false,
+                      "isPaymentMethodVerified": true,
+                      "info": {
+                        "jobs": { "openJobs": [] },
+                        "stats": {
+                          "totalAssignments": 15,
+                          "activeAssignmentsCount": 4,
+                          "hoursCount": 536.83,
+                          "feedbackCount": 6,
+                          "score": 5,
+                          "totalJobsWithHires": 14,
+                          "totalCharges": { "amount": 28019.03 }
+                        },
+                        "company": {
+                          "name": null,
+                          "companyId": "1356396917902204929",
+                          "contractDate": "2021-02-02T00:00:00.000Z",
+                          "profile": { "industry": null, "size": null }
+                        }
+                      },
+                      "workHistory": [
+                        { "jobInfo": { "title": "web app", "access": "PRIVATE", "type": "HOURLY" }, "contractorInfo": { "contractorName": "Harshit V." } },
+                        { "jobInfo": { "title": "Detailing Web App", "access": "PRIVATE", "type": "HOURLY" }, "contractorInfo": { "contractorName": "Shivani V." } },
+                        { "jobInfo": { "title": "Skateboard designs x5", "access": "PRIVATE", "type": "FIXED" }, "contractorInfo": { "contractorName": "Jeff Y." } }
+                      ]
+                    }
+                  }
+                }
+              },
+              "clientCompanyMetadata": {
+                "data": {
+                  "clientCompanyMetadata": {
+                    "rid": "1000005138",
+                    "uid": "1356396917902204929",
+                    "name": "Cail LLC"
+                  }
+                }
+              },
+              "agencyStaffs": {
+                "data": {
+                  "agencyStaffsAuth": {
+                    "totalCount": 2,
+                    "staffs": [
+                      { "id": "1356396917902204930", "memberType": "CONTRACTOR", "personalData": { "name": "Chrystal B.", "ciphertext": "~01c8a459d4cf28fb7c", "topRatedStatus": "not_eligible" } },
+                      { "id": "2020714509603530371", "memberType": "CONTRACTOR", "personalData": { "name": "Joseph B.", "ciphertext": "~01033cda48377c4e0c", "topRatedStatus": "not_eligible" } }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "webhookUrl": "https://n8n-production-3b5ff.up.railway.app/webhook/upwork-leads",
+          "executionMode": "production"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Extract Job + Name", "type": "main", "index": 0 }]]
+    },
+    "Extract Job + Name": {
+      "main": [[{ "node": "AI: Person or Company?", "type": "main", "index": 0 }]]
+    },
+    "Gemini (Classifier)": {
+      "ai_languageModel": [[{ "node": "AI: Person or Company?", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Structured Parser (Classify)": {
+      "ai_outputParser": [[{ "node": "AI: Person or Company?", "type": "ai_outputParser", "index": 0 }]]
+    },
+    "AI: Person or Company?": {
+      "main": [[{ "node": "Is Company?", "type": "main", "index": 0 }]]
+    },
+    "Is Company?": {
+      "main": [
+        [{ "node": "Set Company Name", "type": "main", "index": 0 }],
+        [{ "node": "AI: Reveal Company Name", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gemini (Reveal)": {
+      "ai_languageModel": [[{ "node": "AI: Reveal Company Name", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Structured Parser (Reveal)": {
+      "ai_outputParser": [[{ "node": "AI: Reveal Company Name", "type": "ai_outputParser", "index": 0 }]]
+    },
+    "Set Company Name": {
+      "main": [[{ "node": "Merge Paths", "type": "main", "index": 0 }]]
+    },
+    "AI: Reveal Company Name": {
+      "main": [[{ "node": "Set Revealed Name", "type": "main", "index": 0 }]]
+    },
+    "Set Revealed Name": {
+      "main": [[{ "node": "Merge Paths", "type": "main", "index": 1 }]]
+    },
+    "Merge Paths": {
+      "main": [[{ "node": "Format Lead + Message", "type": "main", "index": 0 }]]
+    },
+    "Format Lead + Message": {
+      "main": [[
+        { "node": "Send to Telegram", "type": "main", "index": 0 },
+        { "node": "Append to Sheet", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "55f84cc4-8ge2-5bcf-cc28-760e565f1ba1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e575230324d891fb277f43481084a6dc6b83dad6c0a0a3590105e88712a25d10"
+  },
+  "id": "pLDyTKOH7PZUAA1N",
+  "tags": []
+}

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Upwork Scraper v2 — Hybrid API",
+  "version": "2.0.0",
+  "description": "High-performance hybrid scraper: 80% direct API calls, 20% minimal tab usage. No per-job tabs.",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage",
+    "alarms",
+    "downloads",
+    "cookies"
+  ],
+  "host_permissions": [
+    "*://*.upwork.com/*",
+    "https://n8n-production-3b5ff.up.railway.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Upwork Scraper v2"
+  }
+}

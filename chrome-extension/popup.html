@@ -37,6 +37,10 @@
         <button id="btn-jobs-download" class="icon-btn" title="Download JSON" disabled>&#x2B07;</button>
         <button id="btn-jobs-clear" class="icon-btn danger" title="Clear all">&#x2715;</button>
       </div>
+      <div class="panel-toolbar" style="gap:6px">
+        <input id="job-url-input" type="text" placeholder="Paste job URL to lookup..." autocomplete="off" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid #444;border-radius:4px;background:#1a1a2e;color:#e0e0e0" />
+        <button id="btn-job-url-lookup" class="primary" style="padding:4px 10px;font-size:12px">Lookup</button>
+      </div>
       <div id="jobs-list">
         <div class="empty">Browse a job on Upwork to auto-detect, or click &#x25B6; Run Scrape.</div>
       </div>
@@ -52,8 +56,12 @@
 
     <!-- SEARCH PANEL -->
     <div id="panel-search" class="hidden">
+      <div class="panel-toolbar" style="gap:6px">
+        <input id="search-query-input" type="text" placeholder="Search query (e.g. n8n, React developer)..." autocomplete="off" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid #444;border-radius:4px;background:#1a1a2e;color:#e0e0e0" />
+        <button id="btn-api-search" class="primary" style="padding:4px 10px;font-size:12px">&#x1F50D; Search</button>
+      </div>
       <div class="panel-toolbar">
-        <span id="search-count" class="toolbar-status">No results yet &#x2014; click &#x25B6; Run Scrape</span>
+        <span id="search-count" class="toolbar-status">Enter a query above and click Search.</span>
         <span style="flex:1"></span>
         <button id="btn-search-download" class="icon-btn" title="Download JSON" disabled>&#x2B07;</button>
         <button id="btn-search-clear" class="icon-btn danger" title="Clear results">&#x2715;</button>

@@ -9,7 +9,9 @@ let drawerTab      = 'overview';
 let searchDrawerJob = null;
 let searchDrawerTab = 'overview';
 let cfgInited      = false;
-let scrapeRunThisSession = false; // true once Run Scrape is clicked this popup session
+let scrapeRunThisSession    = false; // true once Run Scrape is clicked this popup session
+let apiSearchRunThisSession = false; // true once Search button is clicked this popup session
+let searchProgressTimer     = null;  // countdown interval for 2-min wait display
 
 // -- Helpers ------------------------------------------------------------------
 function esc(s) {
@@ -66,6 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-jobs-refresh').addEventListener('click', loadJobs);
   document.getElementById('btn-jobs-download').addEventListener('click', handleJobsDownload);
   document.getElementById('btn-jobs-clear').addEventListener('click', handleJobsClear);
+  document.getElementById('btn-job-url-lookup').addEventListener('click', handleJobUrlLookup);
   document.getElementById('drawer-close').addEventListener('click', () => {
     document.getElementById('job-drawer').classList.add('hidden');
     drawerJob = null;
@@ -73,6 +76,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-search-download').addEventListener('click', handleSearchDownload);
   document.getElementById('btn-search-clear').addEventListener('click', handleSearchClear);
+  document.getElementById('btn-api-search').addEventListener('click', handleApiSearch);
+  document.getElementById('search-query-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleApiSearch();
+  });
   document.getElementById('search-drawer-close').addEventListener('click', () => {
     document.getElementById('search-drawer').classList.add('hidden');
     searchDrawerJob = null;
@@ -81,15 +88,39 @@ document.addEventListener('DOMContentLoaded', () => {
   // Auto-refresh when background saves new data
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.companyLookups && activePanel === 'jobs')   loadJobs();
-    if (changes.lastSearchJobs  && activePanel === 'search') loadSearchJobs();
+    if (changes.companyLookups && activePanel === 'jobs') loadJobs();
+    // pull search updates when a scrape or API search is active this session
+    if (changes.lastSearchJobs && activePanel === 'search' && (scrapeRunThisSession || apiSearchRunThisSession)) loadSearchJobs();
+    if (changes.searchProgress && activePanel === 'search') updateSearchProgress(changes.searchProgress.newValue);
   });
 
-  // Always start with a clean search tab — wipe any stale results from last session
-  chrome.storage.local.remove('lastSearchJobs');
+  // Force search grid to empty state right now — synchronous, no storage reads
+  searchJobs = [];
+  document.getElementById('search-grid').innerHTML =
+    '<div class="empty sg-empty">Enter a query above and click Search.</div>';
+  document.getElementById('search-count').textContent = 'Enter a query above and click Search.';
+  document.getElementById('btn-search-download').disabled = true;
+  // Belt-and-suspenders: also clear any stale storage data from previous sessions
+  chrome.storage.local.remove(['lastSearchJobs']);
+
+  // Restore in-progress search state if background was already running one
+  // Treat searches older than 15 minutes as stale (service worker likely crashed)
+  chrome.storage.local.get(['searchProgress'], (s) => {
+    const prog = s.searchProgress;
+    const stale = !prog?.ts || (Date.now() - prog.ts) > 15 * 60 * 1000;
+    if (prog?.active && !stale) {
+      apiSearchRunThisSession = true;
+      scrapeRunThisSession    = true;
+      document.getElementById('btn-api-search').disabled = true;
+      if (activePanel === 'search') updateSearchProgress(prog);
+    } else if (prog?.active && stale) {
+      // Clear the stale active flag so the button stays enabled
+      chrome.storage.local.remove(['searchProgress']);
+    }
+  });
+
   loadActiveState();
   loadJobs();
-  renderSearchGrid();
 });
 
 // -- Activate / Deactivate ----------------------------------------------------
@@ -128,12 +159,11 @@ function loadJobs() {
 
 // -- Load search results (last Run Scrape) ------------------------------------
 function loadSearchJobs() {
-  // Only show results if a scrape was triggered this popup session.
-  // This ensures the Search tab is always blank on fresh popup open.
-  if (!scrapeRunThisSession) {
+  // Only show results if a scrape or API search was triggered this popup session.
+  if (!scrapeRunThisSession && !apiSearchRunThisSession) {
     searchJobs = [];
     document.getElementById('btn-search-download').disabled = true;
-    document.getElementById('search-count').textContent = 'No results yet \u2014 click \u25B6 Run Scrape in Jobs tab';
+    document.getElementById('search-count').textContent = 'Enter a query above and click Search.';
     renderSearchGrid();
     return;
   }
@@ -516,44 +546,72 @@ function handleRunScrape() {
   btn.textContent = '\u23F3 Scraping\u2026';
   status.textContent = 'Starting\u2026';
 
-    // Mark this session as having a scrape so loadSearchJobs() shows real data
-    scrapeRunThisSession = true;
+  // Mark session so storage.onChanged will live-update the Search tab
+  scrapeRunThisSession = true;
 
-    // Clear previous results in storage and UI, then switch to Search tab
-    chrome.storage.local.set({ lastSearchJobs: [] }, () => {
-      searchJobs = [];
-      renderSearchGrid();
-      document.getElementById('btn-search-download').disabled = true;
-      document.getElementById('search-count').textContent = 'Scraping\u2026 0 jobs so far';
+  // Wipe previous search results in storage + UI
+  chrome.storage.local.remove(['lastSearchJobs']);
+  searchJobs = [];
+  document.getElementById('btn-search-download').disabled = true;
+  document.getElementById('search-count').textContent = 'Scraping\u2026 jobs appear as processed';
+  renderSearchGrid();
 
-      // Switch to Search tab
-      const searchTab = document.querySelector('.top-tab[data-panel="search"]');
-      if (searchTab) searchTab.click();
+  // Switch to Search tab so user sees results come in
+  const searchTab = document.querySelector('.top-tab[data-panel="search"]');
+  if (searchTab) {
+    activePanel = 'search';
+    document.querySelectorAll('.top-tab').forEach(b => b.classList.remove('active'));
+    searchTab.classList.add('active');
+    document.getElementById('panel-jobs').classList.add('hidden');
+    document.getElementById('panel-search').classList.remove('hidden');
+    document.getElementById('panel-config').classList.add('hidden');
+  }
 
-      chrome.runtime.sendMessage({ action: 'runSearchLookup', searchUrl: url, maxJobs }, (res) => {
-        btn.disabled = false;
-        btn.textContent = '\u25B6 Run Scrape';
-        if (chrome.runtime.lastError) {
-          status.textContent = '\u2717 ' + chrome.runtime.lastError.message;
-          showToast('Error: ' + chrome.runtime.lastError.message);
-          return;
-        }
-        if (!res) { status.textContent = '\u2717 No response'; return; }
-        if (!res.success) {
-          status.textContent = '\u2717 ' + (res.error || 'Unknown error');
-          showToast(res.error || 'Scrape failed');
-          return;
-        }
-        if (res.started) {
-          status.textContent = '\u23F3 Scraping\u2026 results appear as processed';
-          showToast('Scraping started \u2014 cards appear as processed');
-          return;
-        }
-        const pages = res.pages || 1;
-        status.textContent = '\u23F3 Scraping ' + res.found + ' jobs across ' + pages + ' page' + (pages !== 1 ? 's' : '') + '\u2026';
-        showToast('Scraping ' + res.found + ' jobs \u2014 cards appear as processed');
-      });
-    });
+  chrome.runtime.sendMessage({ action: 'runSearchLookup', searchUrl: url, maxJobs }, (res) => {
+    btn.disabled = false;
+    btn.textContent = '\u25B6 Run Scrape';
+    if (chrome.runtime.lastError) {
+      status.textContent = '\u2717 ' + chrome.runtime.lastError.message;
+      showToast('Error: ' + chrome.runtime.lastError.message);
+      scrapeRunThisSession = false;
+      return;
+    }
+    if (!res || !res.success) {
+      const err = (res && res.error) || 'No response from background';
+      status.textContent = '\u2717 ' + err;
+      showToast(err);
+      scrapeRunThisSession = false;
+      return;
+    }
+    // Background accepted the job — it will save to lastSearchJobs as each job is processed.
+    // storage.onChanged picks those up and calls loadSearchJobs() in real-time.
+    status.textContent = '\u23F3 Scraping in progress \u2014 jobs appear as processed';
+    showToast('Scrape started \u2014 jobs appear as they are processed');
+  });
+}
+
+// -- Job URL Lookup -----------------------------------------------------------
+function handleJobUrlLookup() {
+  const input = document.getElementById('job-url-input');
+  const url = input.value.trim();
+  if (!url) { showToast('Paste a job URL'); return; }
+  const btn = document.getElementById('btn-job-url-lookup');
+  btn.disabled = true;
+  btn.textContent = '\u23F3';
+  chrome.runtime.sendMessage({ action: 'lookupJobUrl', url }, (res) => {
+    btn.disabled = false;
+    btn.textContent = 'Lookup';
+    if (chrome.runtime.lastError) {
+      showToast('Error: ' + chrome.runtime.lastError.message);
+      return;
+    }
+    if (!res?.success) {
+      showToast(res?.error || 'Lookup failed');
+      return;
+    }
+    showToast('Looking up ' + (res.cipher || 'job') + '\u2026');
+    input.value = '';
+  });
 }
 
 // -- Download / Clear (Jobs tab) ----------------------------------------------
@@ -590,16 +648,101 @@ function handleSearchDownload() {
 
 function handleSearchClear() {
   if (!confirm('Clear search results?')) return;
-  scrapeRunThisSession = false;
-  chrome.storage.local.set({ lastSearchJobs: [] }, () => {
-    searchJobs = [];
-    document.getElementById('btn-search-download').disabled = true;
-    document.getElementById('search-drawer').classList.add('hidden');
-    searchDrawerJob = null;
-    renderSearchGrid();
-    document.getElementById('search-count').textContent = 'No results yet \u2014 click \u25B6 Run Scrape in Jobs tab';
-    showToast('Cleared');
+  scrapeRunThisSession    = false;
+  apiSearchRunThisSession = false;
+  chrome.storage.local.set({ lastSearchJobs: [] });
+  chrome.storage.local.remove(['searchProgress']);
+  searchJobs = [];
+  document.getElementById('btn-search-download').disabled = true;
+  document.getElementById('btn-api-search').disabled = false;
+  document.getElementById('search-drawer').classList.add('hidden');
+  searchDrawerJob = null;
+  renderSearchGrid();
+  document.getElementById('search-count').textContent = 'Enter a query above and click Search.';
+  showToast('Cleared');
+}
+
+// -- API Search ---------------------------------------------------------------
+function handleApiSearch() {
+  const query = (document.getElementById('search-query-input').value || '').trim();
+  if (!query) { showToast('Enter a search query first'); return; }
+
+  const btn = document.getElementById('btn-api-search');
+  btn.disabled = true;
+
+  apiSearchRunThisSession = true;
+  scrapeRunThisSession    = true;
+
+  chrome.storage.local.remove(['lastSearchJobs']);
+  searchJobs = [];
+  document.getElementById('btn-search-download').disabled = true;
+  document.getElementById('search-count').textContent = 'Opening search page\u2026';
+  renderSearchGrid();
+
+  // Switch to Search tab so the user sees results arrive in real-time
+  const searchTabBtn = document.querySelector('.top-tab[data-panel="search"]');
+  if (searchTabBtn && activePanel !== 'search') {
+    activePanel = 'search';
+    document.querySelectorAll('.top-tab').forEach(b => b.classList.remove('active'));
+    searchTabBtn.classList.add('active');
+    ['jobs', 'search', 'config'].forEach(p =>
+      document.getElementById('panel-' + p).classList.toggle('hidden', p !== 'search')
+    );
+  }
+
+  chrome.runtime.sendMessage({ action: 'searchByQuery', query, maxJobs: 100 }, (res) => {
+    if (chrome.runtime.lastError || !res?.success) {
+      btn.disabled = false;
+      showToast('Search failed: ' + (chrome.runtime.lastError?.message || res?.error || 'unknown'));
+      return;
+    }
+    showToast('Search started \u2014 jobs appear as they are processed');
   });
+}
+
+function updateSearchProgress(prog) {
+  if (!prog) return;
+  clearInterval(searchProgressTimer);
+  searchProgressTimer = null;
+
+  const countEl = document.getElementById('search-count');
+  const btn     = document.getElementById('btn-api-search');
+
+  if (!prog.active) {
+    btn.disabled = false;
+    if (prog.phase === 'done') {
+      countEl.textContent = 'Done \u2014 ' + (prog.processed || 0) + ' job' +
+        ((prog.processed || 0) !== 1 ? 's' : '') + ' processed for \u201c' + (prog.query || '') + '\u201d';
+    } else if (prog.phase === 'error') {
+      countEl.textContent = 'Error: ' + (prog.error || 'unknown');
+      showToast('Search error: ' + (prog.error || 'unknown'));
+    }
+    return;
+  }
+
+  btn.disabled = true;
+  const refresh = () => {
+    if (prog.phase === 'opening') {
+      countEl.textContent = 'Opening Upwork search page\u2026';
+    } else if (prog.phase === 'searching') {
+      countEl.textContent = 'Collecting jobs for \u201c' + prog.query + '\u201d \u2014 found ' +
+        prog.found + '/' + (prog.total || '?');
+    } else if (prog.phase === 'lookup') {
+      countEl.textContent = 'Looking up job ' + prog.processed + '/' + prog.total +
+        ' for \u201c' + prog.query + '\u201d';
+    } else if (prog.phase === 'waiting') {
+      const remaining = prog.waitUntil
+        ? Math.max(0, Math.ceil((prog.waitUntil - Date.now()) / 1000))
+        : 120;
+      countEl.textContent = 'Waiting ' + remaining + 's before next job (' +
+        prog.processed + '/' + prog.total + ' done)';
+      if (remaining <= 0) clearInterval(searchProgressTimer);
+    }
+  };
+  refresh();
+  if (prog.phase === 'waiting') {
+    searchProgressTimer = setInterval(refresh, 1000);
+  }
 }
 
 // -- Config panel -------------------------------------------------------------

@@ -1,0 +1,126 @@
+2026-04-09 09:34:40,875 - INFO - __main__ - MainThread - Starting Upwork Scraper Application
+2026-04-09 09:34:40,875 - INFO - __main__ - MainThread - Initializing browser...
+2026-04-09 09:34:40,875 - DEBUG - undetected_chromedriver.patcher - MainThread - getting release number from /latest-versions-per-milestone-with-downloads.json
+2026-04-09 09:34:41,370 - DEBUG - undetected_chromedriver.patcher - MainThread - downloading from https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.113/win32/chromedriver-win32.zip
+2026-04-09 09:34:44,349 - DEBUG - undetected_chromedriver.patcher - MainThread - unzipping C:\Users\levi\AppData\Local\Temp\tmpde3m4sp5
+2026-04-09 09:34:44,496 - INFO - undetected_chromedriver.patcher - MainThread - patching driver executable C:\Users\levi\appdata\roaming\undetected_chromedriver\undetected_chromedriver.exe
+2026-04-09 09:34:45,390 - DEBUG - undetected_chromedriver.patcher - MainThread - found block:
+b'{window.cdc_adoQpoasnfa76pfcZLmcfl_Array = window.Array;window.cdc_adoQpoasnfa76pfcZLmcfl_Object = window.Object;window.cdc_adoQpoasnfa76pfcZLmcfl_Promise = window.Promise;window.cdc_adoQpoasnfa76pfcZLmcfl_Proxy = window.Proxy;window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol = window.Symbol;window.cdc_adoQpoasnfa76pfcZLmcfl_JSON = window.JSON;window.cdc_adoQpoasnfa76pfcZLmcfl_Window = window.Window;}'
+replacing with:
+b'{console.log("undetected chromedriver 1337!")}                                                                                                                                                                                                                                                                                                                                                             '
+2026-04-09 09:34:45,416 - DEBUG - undetected_chromedriver.patcher - MainThread - patching took us 0.92 seconds
+2026-04-09 09:34:46,177 - DEBUG - selenium.webdriver.common.driver_finder - MainThread - Skipping Selenium Manager; path to chrome driver specified in Service class: C:\Users\levi\appdata\roaming\undetected_chromedriver\undetected_chromedriver.exe
+2026-04-09 09:34:46,328 - DEBUG - selenium.webdriver.common.service - MainThread - Started executable: `C:\Users\levi\appdata\roaming\undetected_chromedriver\undetected_chromedriver.exe` in a child process with pid: 27568 using 0 to output -3
+2026-04-09 09:34:46,833 - DEBUG - selenium.webdriver.remote.remote_connection - MainThread - POST http://localhost:59321/session {'capabilities': {'firstMatch': [{}], 'alwaysMatch': {'browserName': 'chrome', 'pageLoadStrategy': <PageLoadStrategy.normal: 'normal'>, 'goog:chromeOptions': {'extensions': [], 'binary': 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'args': ['--disable-blink-features=AutomationControlled', '--disable-web-security', '--allow-running-insecure-content', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--remote-debugging-port=9222', '--disable-extensions', '--disable-plugins', '--remote-debugging-host=127.0.0.1', '--remote-debugging-port=59320', '--user-data-dir=C:\\Users\\levi\\AppData\\Local\\Temp\\tmpdxv7x9q3', '--lang=en-US', '--no-default-browser-check', '--no-first-run', '--no-sandbox', '--test-type', '--window-size=1920,1080', '--start-maximized', '--no-sandbox', '--log-level=0'], 'debuggerAddress': '127.0.0.1:59320'}}}}
+2026-04-09 09:34:46,835 - DEBUG - urllib3.connectionpool - MainThread - Starting new HTTP connection (1): localhost:59321
+2026-04-09 09:34:46,874 - DEBUG - urllib3.connectionpool - MainThread - http://localhost:59321 "POST /session HTTP/1.1" 500 0
+2026-04-09 09:34:46,874 - DEBUG - selenium.webdriver.remote.remote_connection - MainThread - Remote response: status=500 | data={"value":{"error":"session not created","message":"session not created: cannot connect to chrome at 127.0.0.1:59320\nfrom session not created: This version of ChromeDriver only supports Chrome version 136\nCurrent browser version is 146.0.7680.180","stacktrace":"\tGetHandleVerifier [0x003CFC03+61635]\n\tGetHandleVerifier [0x003CFC44+61700]\n\t(No symbol) [0x001F05D3]\n\t(No symbol) [0x0022A04B]\n\t(No symbol) [0x00229069]\n\t(No symbol) [0x0021F7AF]\n\t(No symbol) [0x0021F5E6]\n\t(No symbol) [0x00268DF3]\n\t(No symbol) [0x0026880A]\n\t(No symbol) [0x0025D096]\n\t(No symbol) [0x0022C840]\n\t(No symbol) [0x0022D6A4]\n\tGetHandleVerifier [0x00654523+2701795]\n\tGetHandleVerifier [0x0064FCA6+2683238]\n\tGetHandleVerifier [0x0066A9EE+2793134]\n\tGetHandleVerifier [0x003E68C5+155013]\n\tGetHandleVerifier [0x003ECFAD+181357]\n\tGetHandleVerifier [0x003D7458+92440]\n\tGetHandleVerifier [0x003D7600+92864]\n\tGetHandleVerifier [0x003C1FF0+5296]\n\tBaseThreadInitThunk [0x74845D49+25]\n\tRtlInitializeExceptionChain [0x7746D81B+107]\n\tRtlGetAppContainerNamedObjectPath [0x7746D7A1+561]\n"}} | headers=HTTPHeaderDict({'Content-Length': '1094', 'Content-Type': 'application/json; charset=utf-8', 'cache-control': 'no-cache'})
+2026-04-09 09:34:46,874 - DEBUG - selenium.webdriver.remote.remote_connection - MainThread - Finished Request
+2026-04-09 09:34:49,122 - ERROR - __main__ - MainThread - Failed to initialize browser: Message: session not created: cannot connect to chrome at 127.0.0.1:59320
+from session not created: This version of ChromeDriver only supports Chrome version 136
+Current browser version is 146.0.7680.180; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	GetHandleVerifier [0x003CFC03+61635]
+	GetHandleVerifier [0x003CFC44+61700]
+	(No symbol) [0x001F05D3]
+	(No symbol) [0x0022A04B]
+	(No symbol) [0x00229069]
+	(No symbol) [0x0021F7AF]
+	(No symbol) [0x0021F5E6]
+	(No symbol) [0x00268DF3]
+	(No symbol) [0x0026880A]
+	(No symbol) [0x0025D096]
+	(No symbol) [0x0022C840]
+	(No symbol) [0x0022D6A4]
+	GetHandleVerifier [0x00654523+2701795]
+	GetHandleVerifier [0x0064FCA6+2683238]
+	GetHandleVerifier [0x0066A9EE+2793134]
+	GetHandleVerifier [0x003E68C5+155013]
+	GetHandleVerifier [0x003ECFAD+181357]
+	GetHandleVerifier [0x003D7458+92440]
+	GetHandleVerifier [0x003D7600+92864]
+	GetHandleVerifier [0x003C1FF0+5296]
+	BaseThreadInitThunk [0x74845D49+25]
+	RtlInitializeExceptionChain [0x7746D81B+107]
+	RtlGetAppContainerNamedObjectPath [0x7746D7A1+561]
+
+2026-04-09 09:34:49,153 - INFO - __main__ - MainThread - Cleaning up resources...
+2026-04-09 09:34:49,153 - ERROR - __main__ - MainThread - Application error: Message: session not created: cannot connect to chrome at 127.0.0.1:59320
+from session not created: This version of ChromeDriver only supports Chrome version 136
+Current browser version is 146.0.7680.180; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	GetHandleVerifier [0x003CFC03+61635]
+	GetHandleVerifier [0x003CFC44+61700]
+	(No symbol) [0x001F05D3]
+	(No symbol) [0x0022A04B]
+	(No symbol) [0x00229069]
+	(No symbol) [0x0021F7AF]
+	(No symbol) [0x0021F5E6]
+	(No symbol) [0x00268DF3]
+	(No symbol) [0x0026880A]
+	(No symbol) [0x0025D096]
+	(No symbol) [0x0022C840]
+	(No symbol) [0x0022D6A4]
+	GetHandleVerifier [0x00654523+2701795]
+	GetHandleVerifier [0x0064FCA6+2683238]
+	GetHandleVerifier [0x0066A9EE+2793134]
+	GetHandleVerifier [0x003E68C5+155013]
+	GetHandleVerifier [0x003ECFAD+181357]
+	GetHandleVerifier [0x003D7458+92440]
+	GetHandleVerifier [0x003D7600+92864]
+	GetHandleVerifier [0x003C1FF0+5296]
+	BaseThreadInitThunk [0x74845D49+25]
+	RtlInitializeExceptionChain [0x7746D81B+107]
+	RtlGetAppContainerNamedObjectPath [0x7746D7A1+561]
+Traceback (most recent call last):
+  File "C:\upwork-scrapper\scraper.py", line 506, in main
+    scraper.init_browser()
+  File "C:\upwork-scrapper\scraper.py", line 225, in init_browser
+    self.driver = uc.Chrome(options=options, version_main=136)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\undetected_chromedriver\__init__.py", line 466, in __init__
+    super(Chrome, self).__init__(
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\chrome\webdriver.py", line 46, in __init__
+    super().__init__(
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\chromium\webdriver.py", line 67, in __init__
+    super().__init__(command_executor=executor, options=options)
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\remote\webdriver.py", line 257, in __init__
+    self.start_session(capabilities)
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\undetected_chromedriver\__init__.py", line 724, in start_session
+    super(selenium.webdriver.chrome.webdriver.WebDriver, self).start_session(
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\remote\webdriver.py", line 352, in start_session
+    response = self.execute(Command.NEW_SESSION, caps)["value"]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\remote\webdriver.py", line 432, in execute
+    self.error_handler.check_response(response)
+  File "C:\Users\levi\AppData\Local\Programs\Python\Python312\Lib\site-packages\selenium\webdriver\remote\errorhandler.py", line 232, in check_response
+    raise exception_class(message, screen, stacktrace)
+selenium.common.exceptions.SessionNotCreatedException: Message: session not created: cannot connect to chrome at 127.0.0.1:59320
+from session not created: This version of ChromeDriver only supports Chrome version 136
+Current browser version is 146.0.7680.180; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	GetHandleVerifier [0x003CFC03+61635]
+	GetHandleVerifier [0x003CFC44+61700]
+	(No symbol) [0x001F05D3]
+	(No symbol) [0x0022A04B]
+	(No symbol) [0x00229069]
+	(No symbol) [0x0021F7AF]
+	(No symbol) [0x0021F5E6]
+	(No symbol) [0x00268DF3]
+	(No symbol) [0x0026880A]
+	(No symbol) [0x0025D096]
+	(No symbol) [0x0022C840]
+	(No symbol) [0x0022D6A4]
+	GetHandleVerifier [0x00654523+2701795]
+	GetHandleVerifier [0x0064FCA6+2683238]
+	GetHandleVerifier [0x0066A9EE+2793134]
+	GetHandleVerifier [0x003E68C5+155013]
+	GetHandleVerifier [0x003ECFAD+181357]
+	GetHandleVerifier [0x003D7458+92440]
+	GetHandleVerifier [0x003D7600+92864]
+	GetHandleVerifier [0x003C1FF0+5296]
+	BaseThreadInitThunk [0x74845D49+25]
+	RtlInitializeExceptionChain [0x7746D81B+107]
+	RtlGetAppContainerNamedObjectPath [0x7746D7A1+561]
+
+2026-04-09 09:34:49,192 - INFO - __main__ - MainThread - Cleaning up resources...

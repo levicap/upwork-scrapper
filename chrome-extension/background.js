@@ -23,6 +23,63 @@ const tabPageStage = new Map();
 // Track last job URL per tab for auto-capture on navigation-away
 const tabLastJobUrl = new Map();
 
+// Per-tab captured GQL responses for passive job detection.
+// Key: `${tabId}` → [{ url, status, data, requestBody }]
+// Accumulated by saveRequest, consumed by triggerJobLookup.
+const _capturedGqlByTab = new Map();
+
+function jobCipherToOpeningId(cipher) {
+  if (!cipher || typeof cipher !== 'string') return '';
+  return cipher.replace(/^~02/, '');
+}
+
+// ─── GQL query for job auth details (exact query Upwork's frontend uses) ──────
+const JOB_AUTH_DETAILS_QUERY = `fragment JobPubOpeningInfoFragment on Job { ciphertext id type access title hideBudget createdOn notSureProjectDuration notSureFreelancersToHire notSureExperienceLevel notSureLocationPreference premium }
+fragment JobPubOpeningSegmentationDataFragment on JobSegmentation { customValue label name sortOrder type value skill { description externalLink prettyName skill id } }
+fragment JobPubOpeningSandDataFragment on SandsData { occupation { freeText ontologyId prefLabel id uid: id } ontologySkills { groupId id freeText prefLabel groupPrefLabel relevance } additionalSkills { groupId id freeText prefLabel relevance } }
+fragment JobPubOpeningFragment on JobPubOpeningInfo { status postedOn publishTime sourcingTime startDate deliveryDate workload contractorTier description info { ...JobPubOpeningInfoFragment } segmentationData { ...JobPubOpeningSegmentationDataFragment } sandsData { ...JobPubOpeningSandDataFragment } category { name urlSlug } categoryGroup { name urlSlug } budget { amount currencyCode } annotations { customFields tags } engagementDuration { label weeks } extendedBudgetInfo { hourlyBudgetMin hourlyBudgetMax hourlyBudgetType } attachments @include(if: $isLoggedIn) { fileName length uri } clientActivity { lastBuyerActivity totalApplicants totalHired totalInvitedToInterview unansweredInvites invitationsSent numberOfPositionsToHire } deliverables deadline tools { name } }
+fragment JobQualificationsFragment on JobQualifications { countries earnings groupRecno languages localDescription localFlexibilityDescription localMarket minJobSuccessScore minOdeskHours onSiteType prefEnglishSkill regions risingTalent shouldHavePortfolio states tests timezones type locationCheckRequired group { groupId groupLogo groupName } location { city country countryTimezone offsetFromUtcMillis state worldRegion } locations { id type } minHoursWeek @skip(if: $isLoggedIn) }
+fragment JobAuthDetailsOpeningFragment on JobAuthOpeningInfo { job { ...JobPubOpeningFragment } qualifications { ...JobQualificationsFragment } questions { question position } }
+fragment JobPubBuyerInfoFragment on JobPubBuyerInfo { location { offsetFromUtcMillis countryTimezone city country } stats { totalAssignments activeAssignmentsCount hoursCount feedbackCount score totalJobsWithHires totalCharges { amount } } company { name @include(if: $isLoggedIn) companyId @include(if: $isLoggedIn) isEDCReplicated contractDate profile { industry size } } jobs { openCount postedCount @include(if: $isLoggedIn) openJobs { id uid: id isPtcPrivate ciphertext title type } } avgHourlyJobsRate @include(if: $isLoggedIn) { amount } }
+fragment JobAuthDetailsBuyerWorkHistoryFragment on BuyerWorkHistoryItem { isPtcJob status isEDCReplicated isPtcPrivate startDate endDate totalCharge totalHours jobInfo { title id uid: id access type ciphertext } contractorInfo { contractorName accessType ciphertext } rate { amount } feedback { feedbackSuppressed score comment } feedbackToClient { feedbackSuppressed score comment } }
+fragment JobAuthDetailsBuyerFragment on JobAuthBuyerInfo { enterprise isPaymentMethodVerified info { ...JobPubBuyerInfoFragment } workHistory { ...JobAuthDetailsBuyerWorkHistoryFragment } }
+fragment JobAuthDetailsCurrentUserInfoFragment on JobCurrentUserInfo { owner freelancerInfo { profileState applied devProfileCiphertext hired application { vjApplicationId } pendingInvite { inviteId } contract { contractId status } hourlyRate { amount } qualificationsMatches { matches { clientPreferred clientPreferredLabel freelancerValue freelancerValueLabel qualification qualified } } } }
+query JobAuthDetailsQuery($id: ID! $isFreelancerOrAgency: Boolean! $isLoggedIn: Boolean!) { jobAuthDetails(id: $id) { hiredApplicantNames opening { ...JobAuthDetailsOpeningFragment } buyer { ...JobAuthDetailsBuyerFragment } currentUserInfo { ...JobAuthDetailsCurrentUserInfoFragment } similarJobs { id uid: id ciphertext title snippet } workLocation { onSiteCity onSiteCountry onSiteReason onSiteReasonFlexible onSiteState onSiteType } phoneVerificationStatus { status } applicantsBidsStats { avgRateBid { amount currencyCode } minRateBid { amount currencyCode } maxRateBid { amount currencyCode } } specializedProfileOccupationId @include(if: $isFreelancerOrAgency) applicationContext @include(if: $isFreelancerOrAgency) { freelancerAllowed clientAllowed } } }`;
+
+// ─── GQL query for client info by opening (buyer company details + activity) ──
+const CLIENT_INFO_BY_OPENING_QUERY = `
+query clientInfoByOpening($openingId: ID!) {
+  clientInfoByOpening(openingId: $openingId) {
+    buyer {
+      info {
+        company {
+          contractDate
+          name
+          profile { industry size visible l3Occupations }
+          id: companyId
+        }
+        location { country city state countryTimezone worldRegion offsetFromUtcMillis }
+        jobs { postedCount filledCount openCount }
+        stats {
+          feedbackCount hoursCount
+          totalCharges { amount currencyCode }
+          totalAssignments activeAssignmentsCount score totalJobsWithHires
+        }
+        logo
+        avgHourlyJobsRate { amount currencyCode }
+      }
+      cssTier
+      isPaymentMethodVerified
+      isEnterprise: enterprise
+    }
+    activity {
+      lastBuyerActivity numberOfPositionsToHire totalApplicants
+      totalInvitedToInterview totalHired unansweredInvites invitationsSent
+    }
+    jobInfo { status }
+  }
+}`;
+
 // ─── Keep service worker alive ────────────────────────────────────────────────
 // Chrome MV3 service workers are terminated after ~30 s of inactivity.
 // A periodic alarm prevents that while the extension is in use.
@@ -49,36 +106,42 @@ async function attachToAllUpworkTabs() {
 
 // ─── Attach when user navigates to Upwork ────────────────────────────────────
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  // effectiveUrl covers both SPA nav (changeInfo.url only) and full page loads (tab.url)
+  // effectiveUrl: for full loads changeInfo.url is set on 'loading'; for SPA nav only changeInfo.url.
+  // tab.url is reliable on 'complete' (after any redirects) but lags on SPA nav.
   const effectiveUrl = changeInfo.url || tab.url;
   if (!effectiveUrl || !effectiveUrl.includes('upwork.com')) return;
 
-  if (changeInfo.status === 'loading') {
-    attachDebugger(tabId);
-
-    // Classify new URL into a page stage
-    const url = effectiveUrl;
+  // ── Stage classification ──────────────────────────────────────────────────
+  // Run on BOTH full-load 'loading' events AND SPA url-only nav (no status).
+  // This ensures tabPageStage and tabLastJobUrl are always current.
+  const urlForClassify = changeInfo.url; // only update when URL actually changes
+  if (urlForClassify) {
     let stage = 'other';
-    if (/\/nx\/search\/jobs|\?q=|\?skills=|\?category2_uid=|search\/jobs/.test(url)) stage = 'search';
-    else if (/\/jobs\/(~0[^/?#]+).*apply|apply-direct/.test(url))                    stage = 'apply';
-    else if (/\/jobs\/(~0[^/?#]+)|contracts\/new/.test(url))                         stage = 'job';
-    else if (/\/companies\/|\/(agencies|clients)\/|org\//.test(url))                 stage = 'company';
+    if (/\/nx\/search\/jobs|\?q=|\?skills=|\?category2_uid=|search\/jobs/.test(urlForClassify)) stage = 'search';
+    else if (/\/jobs\/(~0[^/?#]+).*apply|apply-direct/.test(urlForClassify))                   stage = 'apply';
+    else if (/\/jobs\/(~0[^/?#]+)|contracts\/new/.test(urlForClassify))                         stage = 'job';
+    else if (/\/companies\/|\/(agencies|clients)\/|org\//.test(urlForClassify))                 stage = 'company';
     tabPageStage.set(tabId, stage);
 
-    // Auto-capture if user is navigating away from a job/apply page
+    // Auto-capture if user navigated away from a job/apply page
     const prevJobUrl = tabLastJobUrl.get(tabId);
-    if (prevJobUrl && prevJobUrl !== url && attachedTabs.has(tabId)) {
+    if (prevJobUrl && prevJobUrl !== urlForClassify && attachedTabs.has(tabId)) {
       triggerAutoCapture(tabId, prevJobUrl);
     }
     if (stage === 'job' || stage === 'apply') {
-      tabLastJobUrl.set(tabId, url);
+      tabLastJobUrl.set(tabId, urlForClassify);
     } else {
       tabLastJobUrl.delete(tabId);
     }
   }
 
-  // ── Passive full lookup: handles BOTH SPA url changes and full page loads ──
-  // changeInfo.url fires on SPA navigation (no status change); status='complete' fires on full load.
+  // ── Attach debugger on full-load navigation ───────────────────────────────
+  if (changeInfo.status === 'loading') {
+    attachDebugger(tabId);
+  }
+
+  // ── Passive single-job lookup: SPA nav OR full-page load ─────────────────
+  // changeInfo.url fires on SPA navigation; status='complete' fires on full load.
   if (_isActive && (changeInfo.url || changeInfo.status === 'complete')) {
     const urlToCheck = changeInfo.url || tab.url;
     if (!urlToCheck) return;
@@ -92,6 +155,32 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         );
       } else {
         setTimeout(() => triggerJobLookup(tabId, cipher).catch(() => {}), delay);
+      }
+    }
+  }
+
+  // ── Auto-scrape search results ────────────────────────────────────────────
+  // Fires on BOTH SPA navigation (changeInfo.url only) and full-page load (status=complete).
+  // SPA nav is the common case on Upwork — without this, auto-scrape never triggers for
+  // in-page navigation (e.g. user clicks search or navigates the Upwork navbar).
+  if (_isActive) {
+    // Use changeInfo.url for SPA nav; tab.url at 'complete' for full loads.
+    // On full loads changeInfo.url also fires during 'loading' — that's fine, the
+    // cooldown guard prevents a second run when 'complete' fires for the same URL.
+    const autoUrl = changeInfo.url || (changeInfo.status === 'complete' ? tab.url : null);
+    if (autoUrl && /\/nx\/search\/jobs|\?q=|\?skills=|\?category2_uid=|search\/jobs/.test(autoUrl)
+                && autoUrl.includes('upwork.com')) {
+      let normalizedUrl = autoUrl;
+      try { const u = new URL(autoUrl); normalizedUrl = u.origin + u.pathname + u.search; } catch(_) {}
+
+      const lastRun = _autoSearchLastRun.get(normalizedUrl) || 0;
+      const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes per URL
+      if (!_activeSearchScrapes.has(normalizedUrl) && (Date.now() - lastRun) > COOLDOWN_MS) {
+        _activeSearchScrapes.add(normalizedUrl);
+        _autoSearchLastRun.set(normalizedUrl, Date.now());
+        console.log('[upwork-ext] auto-scrape triggered for', normalizedUrl);
+        runSearchLookupCore(normalizedUrl, EXT_CONFIG.MAX_JOBS || 100, () => {}, normalizedUrl)
+          .finally(() => _activeSearchScrapes.delete(normalizedUrl));
       }
     }
   }
@@ -116,6 +205,12 @@ chrome.debugger.onDetach.addListener((source) => {
 // Runs the same pipeline as runSearchLookup for a single cipher.
 // Uses the already-loaded Upwork tab as query host (has cookies + CDP attached).
 const _activeJobLookups = new Set(); // prevent duplicate concurrent lookups
+
+// ─── Auto-search-scrape deduplication ────────────────────────────────────────
+// Prevents multiple concurrent runs for the same search URL.
+const _activeSearchScrapes = new Set();
+// Last auto-scrape timestamp per normalized search URL (5-min cooldown).
+const _autoSearchLastRun = new Map();
 async function triggerJobLookup(tabId, cipher) {
   if (_activeJobLookups.has(cipher)) return;
   _activeJobLookups.add(cipher);
@@ -123,52 +218,150 @@ async function triggerJobLookup(tabId, cipher) {
     // Skip if we already have a result for this cipher captured within the last 5 min
     const stored = await new Promise(r => chrome.storage.local.get(['companyLookups'], r));
     const existing = (stored.companyLookups || []).find(l => l.jobCiphertext === cipher);
-    if (existing && (Date.now() - new Date(existing.runAt).getTime()) < 5 * 60 * 1000) return;
+    // Only skip if we already have a GOOD result (title isn't 'Unknown') captured within 5 min.
+    if (existing && existing.jobTitle && existing.jobTitle !== 'Unknown' && (Date.now() - new Date(existing.runAt).getTime()) < 5 * 60 * 1000) return;
 
     console.log('[upwork-ext] passive lookup start:', cipher);
-    let results = await runQueriesInTab(tabId, null, cipher, null);
 
-    const jaBuyerR   = results.find(r => r.alias === 'jobAuth-buyer');
-    const jaFullR    = results.find(r => r.alias === 'jobAuth-full');
-    const ctxRp      = results.find(r => r.alias === 'fetchjobdetailsandcontext');
-    const agencyCId  = jaBuyerR?.data?.data?.jobAuthDetails?.buyer?.info?.company?.companyId || null;
-    const jobTitle   = jaFullR?.data?.data?.jobAuthDetails?.opening?.job?.info?.title
-                    || ctxRp?.data?.data?.fetchJobDetailsAndContext?.opening?.info?.title
-                    || ctxRp?.data?.data?.fetchjobdetailsandcontext?.opening?.info?.title
-                    || 'Unknown';
+    // Wait for Upwork's natural GQL requests to complete.
+    // The CDP handler captures them into _capturedGqlByTab via saveRequest.
+    // Poll up to 15 seconds — GQL requests typically finish within 3-5s of page load.
+    let results = [];
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const tabGql = _capturedGqlByTab.get(tabId) || [];
 
-    const [jcResult, rawCp] = await Promise.all([
-      runJobContextLookup(cipher),
-      agencyCId
-        ? runAgencyLookupInTab(tabId, agencyCId)
-        : Promise.resolve({ alias: 'company-page', skipped: true, reason: 'no companyId' })
-    ]);
-
-    const { profiles: cpProfiles, ...cpResult } = rawCp;
-    const cdResult      = { alias: 'client-details',  companyId: agencyCId, profiles: cpProfiles || [] };
-    const compDetResult = { alias: 'company-details', companyId: agencyCId, profiles: cpProfiles || [] };
-
-    results = results.filter(r =>
-      !['fetchjobdetailsandcontext','company-page','client-details','company-details'].includes(r.alias)
-    );
-    results = [...results, jcResult, cpResult, cdResult, compDetResult];
-
-    const entry = { companyId: agencyCId, jobCiphertext: cipher, jobTitle, runAt: new Date().toISOString(), results };
-
-    chrome.storage.local.get(['companyLookups'], (s) => {
-      const lookups = s.companyLookups || [];
-      const idx = lookups.findIndex(l => l.jobCiphertext === cipher);
-      if (idx >= 0) lookups[idx] = entry; else lookups.unshift(entry);
-      chrome.storage.local.set({ companyLookups: lookups.slice(0, 200) }, () => {
-        const payload = JSON.stringify(cleanForWebhook(entry));
-        const targets = [EXT_CONFIG.WEBHOOK_URL];
-        for (const url of targets) {
-          fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload })
-            .catch(e => console.warn('[upwork-ext] passive-lookup webhook error:', e.message));
-        }
+      // Try cipher-matched responses first
+      const matching = tabGql.filter(r => {
+        const cipherInReq = extractJobCiphertext(r.requestBody);
+        return cipherInReq === cipher;
       });
-      console.log('[upwork-ext] passive lookup saved:', jobTitle);
-    });
+      if (matching.length >= 1) {
+        results = buildResultsFromGqlResponses(matching);
+        if (results.length > 0) break;
+      }
+
+      // Fallback: try ALL GQL responses from this tab (persisted queries may not
+      // have the cipher in the request body, only in the response)
+      if (attempt >= 2) {
+        const byContent = tabGql.filter(r => {
+          const d = r.data;
+          return d && typeof d === 'object' && (d.data?.jobAuthDetails || d.data?.fetchJobDetailsAndContext || d.data?.fetchjobdetailsandcontext || d.jobAuthDetails || d.fetchJobDetailsAndContext || d.fetchjobdetailsandcontext);
+        });
+        if (byContent.length > 0) {
+          results = buildResultsFromGqlResponses(byContent);
+          if (results.length > 0) {
+            console.log('[upwork-ext] passive capture: found results by response content');
+            break;
+          }
+        }
+      }
+    }
+
+    if (results.length > 0) {
+      console.log('[upwork-ext] passive capture found', results.length, 'results');
+    }
+
+    // Fallback: if debugger was attached AFTER page load, GQL requests were missed.
+    // Reload the page via CDP to trigger fresh GQL requests with debugger now active.
+    if (results.length === 0 && attachedTabs.has(tabId)) {
+      console.log('[upwork-ext] no passive data — reloading page via CDP...');
+      _capturedGqlByTab.delete(tabId);
+      try {
+        await chrome.debugger.sendCommand({ tabId }, 'Page.enable', {});
+        const reloadDone = new Promise(res => {
+          const ll = (src, meth) => {
+            if (src.tabId !== tabId) return;
+            if (meth === 'Page.loadEventFired') { chrome.debugger.onEvent.removeListener(ll); res(); }
+          };
+          chrome.debugger.onEvent.addListener(ll);
+          setTimeout(() => { chrome.debugger.onEvent.removeListener(ll); res(); }, 20000);
+        });
+        await chrome.debugger.sendCommand({ tabId }, 'Page.reload', {});
+        await reloadDone;
+
+        // Poll for GQL responses after reload
+        for (let attempt = 0; attempt < 5; attempt++) {
+          await new Promise(r => setTimeout(r, 3000));
+          const tabGql = _capturedGqlByTab.get(tabId) || [];
+          // Try cipher match
+          const matching = tabGql.filter(r => extractJobCiphertext(r.requestBody) === cipher);
+          if (matching.length >= 1) {
+            results = buildResultsFromGqlResponses(matching);
+            if (results.length > 0) { console.log('[upwork-ext] post-reload capture found', results.length, 'results'); break; }
+          }
+          // Try content match
+          if (attempt >= 2) {
+            const byContent = tabGql.filter(r => {
+              const d = r.data;
+              return d && typeof d === 'object' && (d.data?.jobAuthDetails || d.data?.fetchJobDetailsAndContext || d.data?.fetchjobdetailsandcontext || d.jobAuthDetails || d.fetchJobDetailsAndContext || d.fetchjobdetailsandcontext);
+            });
+            if (byContent.length > 0) {
+              results = buildResultsFromGqlResponses(byContent);
+              if (results.length > 0) { console.log('[upwork-ext] post-reload content match:', results.length, 'results'); break; }
+            }
+          }
+        }
+      } catch(e) {
+        console.warn('[upwork-ext] page reload failed:', e.message);
+      }
+    }
+
+    // Fallback 2: direct GQL fetch from page context (most reliable)
+    if (results.length === 0 && attachedTabs.has(tabId)) {
+      console.log('[upwork-ext] trying direct GQL fetch from page context...');
+      try {
+        // Get stored session tokens as fallback
+        const storedTk = await new Promise(r => chrome.storage.local.get(['sessionTokens'], r));
+        const tk = storedTk.sessionTokens || {};
+        const storedBearer = tk['oauth2_global_js_token'] || tk['master_access_token'] || tk['_bearer'] || '';
+        const storedTenant = tk['current_organization_uid'] || '';
+
+        const directExpr = `(async () => {
+          try {
+            var ck = {};
+            document.cookie.split(';').forEach(function(c) {
+              var parts = c.trim().split('=');
+              ck[parts[0]] = parts.slice(1).join('=');
+            });
+            var bearer = ck['oauth2_global_js_token'] || ck['master_access_token'] || ${JSON.stringify(storedBearer)} || '';
+            var tenantId = ck['current_organization_uid'] || ${JSON.stringify(storedTenant)} || '';
+            if (!bearer) return JSON.stringify({ error: 'no bearer token' });
+            var resp = await fetch('https://www.upwork.com/api/graphql/v1?alias=gql-query-get-auth-job-details', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'bearer ' + bearer, 'X-Upwork-API-TenantId': tenantId, 'X-Upwork-Accept-Language': 'en-US' },
+              body: JSON.stringify({ query: ${JSON.stringify(JOB_AUTH_DETAILS_QUERY)}, variables: { id: ${JSON.stringify(cipher)}, isFreelancerOrAgency: true, isLoggedIn: true } })
+            });
+            var data; try { data = await resp.json(); } catch(e) { data = null; }
+            return JSON.stringify({ status: resp.status, data: data });
+          } catch(e) { return JSON.stringify({ error: e.message }); }
+        })()`;
+        const evalRes = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', { expression: directExpr, awaitPromise: true, returnByValue: true });
+        const fetchResult = evalRes?.result?.value ? JSON.parse(evalRes.result.value) : null;
+        console.log('[upwork-ext] passive direct fetch:', fetchResult?.status, 'hasData:', !!(fetchResult?.data?.data?.jobAuthDetails));
+        if (fetchResult && !fetchResult.error && fetchResult.status === 200 && fetchResult.data?.data?.jobAuthDetails) {
+          const wrapped = fetchResult.data;
+          results.push({ alias: 'jobAuth-buyer', status: 200, data: wrapped, source: 'direct-fetch' });
+          results.push({ alias: 'jobAuth-full',  status: 200, data: wrapped, source: 'direct-fetch' });
+        }
+      } catch(dfErr) {
+        console.warn('[upwork-ext] passive direct fetch error:', dfErr.message);
+      }
+    }
+
+    // Fallback 3: template replay
+    if (results.length === 0 && attachedTabs.has(tabId)) {
+      console.log('[upwork-ext] trying template replay...');
+      results = await replayTemplatesForJob(tabId, cipher);
+    }
+
+    if (results.length === 0) {
+      console.warn('[upwork-ext] passive lookup: no data captured for', cipher);
+      return;
+    }
+
+    const entry = await buildJobEntry(tabId, cipher, results);
+    saveJobEntry(entry);
   } catch(e) {
     console.warn('[upwork-ext] triggerJobLookup error:', e.message);
   } finally {
@@ -228,19 +421,34 @@ async function attachDebugger(tabId) {
 
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
-    attachedTabs.add(tabId);
-
-    // Enable Network domain so we receive all network events
-    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
-      maxResourceBufferSize: 10 * 1024 * 1024,  // 10 MB per resource
-      maxTotalBufferSize:   100 * 1024 * 1024   // 100 MB total
-    });
-
-    console.log(`[UpworkCapture] Debugger attached → tab ${tabId}`);
   } catch (e) {
-    // Common causes: DevTools already open on the tab, tab closed, non-http tab
-    console.warn(`[UpworkCapture] Could not attach to tab ${tabId}: ${e.message}`);
+    // On MV3 SW restart the in-memory attachedTabs Set is cleared, but Chrome
+    // keeps the debugger physically attached to the tab. Adopt it instead of failing.
+    if (/already attached|Another debugger/i.test(e.message || '')) {
+      console.log(`[UpworkCapture] Re-adopting already-attached debugger → tab ${tabId}`);
+    } else {
+      // Real failure (DevTools open, tab closed, non-http tab, etc.)
+      console.warn(`[UpworkCapture] Could not attach to tab ${tabId}: ${e.message}`);
+      return;
+    }
   }
+
+  // Whether fresh-attached or re-adopted, mark known and enable Network domain.
+  attachedTabs.add(tabId);
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
+      maxResourceBufferSize: 10 * 1024 * 1024,
+      maxTotalBufferSize:   100 * 1024 * 1024
+    });
+  } catch (e) {
+    console.warn(`[UpworkCapture] Network.enable failed for tab ${tabId}: ${e.message}`);
+  }
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable', {});
+  } catch (e) {
+    console.warn(`[UpworkCapture] Runtime.enable failed for tab ${tabId}: ${e.message}`);
+  }
+  console.log(`[UpworkCapture] Debugger ready → tab ${tabId}`);
 }
 
 // ─── Network event handling ───────────────────────────────────────────────────
@@ -421,6 +629,59 @@ async function saveRequest(entry) {
   // Auto-detect buyer company from job-details responses
   maybeExtractCompany(entry);
 
+  // ── Capture GQL request template for future replay ────────────────────────
+  // When a successful GQL request completes, store its exact headers + query
+  // as a "template". Search scraping and manual URL lookup can replay these
+  // templates with swapped variables instead of building custom queries.
+  if (entry.url?.includes('/api/graphql/v1') && !entry.error && entry.requestBody) {
+    const reqBody = typeof entry.requestBody === 'string' ? tryParseJson(entry.requestBody) : entry.requestBody;
+
+    // Template capture — only possible when the request has an explicit query string
+    if (reqBody?.query) {
+      try {
+        const u = new URL(entry.url);
+        const alias = u.searchParams.get('alias');
+        if (alias) {
+          const rh = entry.requestHeaders || {};
+          chrome.storage.local.get(['requestTemplates'], (st) => {
+            const templates = st.requestTemplates || {};
+            templates[alias] = {
+              url: entry.url,
+              query: reqBody.query,
+              variables: reqBody.variables || {},
+              headers: {
+                'Authorization': rh['Authorization'] || rh['authorization'] || '',
+                'X-Upwork-API-TenantId': rh['X-Upwork-API-TenantId'] || rh['x-upwork-api-tenantid'] || '',
+                'X-XSRF-TOKEN': rh['X-XSRF-TOKEN'] || rh['x-xsrf-token'] || '',
+                'Content-Type': 'application/json',
+                'Accept': rh['Accept'] || rh['accept'] || '*/*',
+                'X-Upwork-Accept-Language': 'en-US'
+              },
+              capturedAt: Date.now()
+            };
+            chrome.storage.local.set({ requestTemplates: templates });
+          });
+        }
+      } catch(_) {}
+    }
+
+    // ── Accumulate GQL responses per tab for passive detection ───────────────
+    // This must run for ALL GQL responses (including persisted queries that have
+    // no 'query' field — only extensions.persistedQuery.sha256Hash + variables).
+    if (entry.responseBody && typeof entry.responseBody === 'object' && entry.tabId) {
+      if (!_capturedGqlByTab.has(entry.tabId)) _capturedGqlByTab.set(entry.tabId, []);
+      _capturedGqlByTab.get(entry.tabId).push({
+        url: entry.url,
+        status: entry.status,
+        data: entry.responseBody,
+        requestBody: typeof reqBody === 'object' ? reqBody : (typeof entry.requestBody === 'object' ? entry.requestBody : null)
+      });
+      // Auto-prune: keep last 50 per tab
+      const arr = _capturedGqlByTab.get(entry.tabId);
+      if (arr.length > 50) arr.splice(0, arr.length - 50);
+    }
+  }
+
   return new Promise((resolve) => {
     chrome.storage.local.get(['requests', 'totalCount'], (result) => {
       const requests   = result.requests   || [];
@@ -434,6 +695,1693 @@ async function saveRequest(entry) {
       chrome.storage.local.set({ requests: trimmed, totalCount }, resolve);
     });
   });
+}
+
+// ─── runSearchLookupCore: shared by runSearchLookup message + searchByQuery ───
+async function runSearchLookupCore(searchUrl, maxJobs, setSearchProgress, searchQuery) {
+  // ── MV3 service-worker keepalive ─────────────────────────────────────────
+  // Chrome kills SW after ~30 s of no Chrome API activity. setInterval here
+  // fires a storage read every 20 s — fast enough to always have a Chrome API
+  // call in flight, keeping the SW alive for the full function duration.
+  const _swKeepAlive = setInterval(
+    () => chrome.storage.local.get(['_swKeepAlive'], () => {}),
+    20000
+  );
+
+  try {
+
+  // Extract bare search query from URL (for template variable injection)
+  let rawQuery = searchQuery;
+  try { rawQuery = new URL(searchUrl).searchParams.get('q') || searchQuery; } catch(_) {}
+
+  const store = await new Promise(r => chrome.storage.local.get(['sessionTokens', 'requestTemplates'], r));
+  const tk       = store.sessionTokens    || {};
+  const tmplMap  = store.requestTemplates || {};
+  const searchTmpl = tmplMap['smf.retrieve.top'] || null;
+
+  const cipherSet = new Set();
+  const searchJobMap = new Map();
+  let liveGraphqlHeaders = null;
+  const postSearchEvent = () => {};
+
+  // ── Debug: function entry ────────────────────────────────────────────────
+  fetch(EXT_CONFIG.WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      _debug: true,
+      event: 'core_start',
+      v: 'v5',
+      searchUrl,
+      maxJobs,
+      searchQuery,
+      hasSessionTokens: Object.keys(tk).length > 0,
+      tokenKeys: Object.keys(tk),
+      hasRequestTemplates: Object.keys(tmplMap).length > 0,
+      ts: new Date().toISOString()
+    })
+  }).catch(() => {});
+
+  // ── Shared helpers ────────────────────────────────────────────────────────
+
+  const addCiphersFromText = (text) => {
+    if (!text || typeof text !== 'string') return 0;
+    let n = 0;
+    for (const m of text.matchAll(/"(~0[0-9a-zA-Z]{8,35})"/g))
+      if (!cipherSet.has(m[1])) { cipherSet.add(m[1]); n++; }
+    return n;
+  };
+
+  const USER_JOB_SEARCH_FALLBACK_QUERY = `
+  query UserJobSearch($requestVariables: UserJobSearchV1Request!) {
+    search {
+      universalSearchNuxt {
+        userJobSearchV1(request: $requestVariables) {
+          paging { total }
+          results { id }
+        }
+      }
+    }
+  }
+  `;
+
+  // Run a fetch() from inside a tab so it carries that tab's session cookies.
+  const tabFetch = async (tabId, url, method, headers, bodyStr) => {
+    const expr = `(async () => {
+  try {
+    const r = await fetch(${JSON.stringify(url)}, {
+      method: ${JSON.stringify(method)}, credentials: 'include',
+      headers: ${JSON.stringify(headers)},
+      ${bodyStr ? `body: ${JSON.stringify(bodyStr)}` : ''}
+    });
+    if (!r.ok) return JSON.stringify({ _status: r.status });
+    return r.text();
+  } catch(e) { return JSON.stringify({ _error: e.message }); }
+})()`;
+    const res = await chrome.debugger.sendCommand(
+      { tabId }, 'Runtime.evaluate',
+      { expression: expr, awaitPromise: true, returnByValue: true }
+    );
+    return res.result?.value || '';
+  };
+
+  // Scan the rendered search page for job ciphers.
+  // Prefer real job card links/hrefs because Upwork's search page is heavily client-rendered
+  // and the raw HTML regex can miss results even when the cards are visible.
+  const domScan = async (tabId) => {
+    try {
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _debug: true, event: 'scan_dom_start', tabId, ts: new Date().toISOString() })
+      });
+
+      const r = await Promise.race([
+        chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+        expression: `(function(){
+  try {
+    var seen=new Set(), found=[];
+    var pushCipher = function(v) {
+      if (!v || typeof v !== 'string') return;
+      var m = v.match(/~0[0-9a-zA-Z]{8,35}/);
+      if (m && !seen.has(m[0])) { seen.add(m[0]); found.push(m[0]); }
+    };
+    var pushUid = function(v) {
+      if (!v || typeof v !== 'string') return;
+      var m = v.match(/^(\d{15,})$/);
+      if (m) {
+        var cipher = '~02' + m[1];
+        if (!seen.has(cipher)) { seen.add(cipher); found.push(cipher); }
+      }
+    };
+
+    // 1) Real job links in rendered cards
+    var selectors = [
+      'article[data-ev-job-uid] a[href*="/jobs/"]',
+      'a[href*="/jobs/details/"]',
+      'a[href*="/jobs/~0"]',
+      'a[href*="/nx/search/jobs/details/~0"]',
+      '[data-test="job-tile-title-link"]',
+      'h2 a[href*="/jobs/"]',
+      'h3 a[href*="/jobs/"]'
+    ];
+    selectors.forEach(function(sel) {
+      document.querySelectorAll(sel).forEach(function(a) {
+        pushCipher(a.href || '');
+        pushCipher(a.getAttribute('href') || '');
+      });
+    });
+
+    // 1b) Numeric opening IDs stored on rendered cards/attributes
+    document.querySelectorAll('article[data-ev-job-uid]').forEach(function(node) {
+      pushUid(node.getAttribute('data-ev-job-uid') || '');
+    });
+    ['data-ev-job-uid','data-job-uid','data-job-id','data-uid'].forEach(function(attr) {
+      document.querySelectorAll('[' + attr + ']').forEach(function(node) {
+        pushUid(node.getAttribute(attr) || '');
+      });
+    });
+
+    // 2) Card HTML as fallback
+    document.querySelectorAll('article, section, main').forEach(function(node) {
+      pushCipher(node.innerHTML || '');
+    });
+
+    // 3) Whole-page HTML as final fallback
+    var html = document.documentElement ? document.documentElement.innerHTML : document.body ? document.body.innerHTML : '';
+    var re=/~0[0-9a-zA-Z]{8,35}/g, m;
+    while ((m=re.exec(html))!==null) if(!seen.has(m[0])){seen.add(m[0]);found.push(m[0]);}
+
+    return JSON.stringify({
+      found: found,
+      title: document.title,
+      articleCount: document.querySelectorAll('article').length,
+      linkCount: document.querySelectorAll('a[href*="/jobs/"]').length,
+      uidCardCount: document.querySelectorAll('article[data-ev-job-uid]').length,
+      bodyTextPreview: (document.body && document.body.innerText ? document.body.innerText.slice(0, 400) : '')
+    });
+  } catch(e){return JSON.stringify({ found: [], error: e.message });}
+})()`,
+          returnByValue: true,
+          timeout: 4000
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('domScan timeout after 5s')), 5000))
+      ]);
+      const out = JSON.parse(r.result?.value || '{"found":[]}');
+      const arr = Array.isArray(out?.found) ? out.found : [];
+      arr.forEach(c => cipherSet.add(c));
+      console.log(`[upwork-ext] search: DOM scan found ${arr.length} ciphers (articles=${out?.articleCount || 0}, links=${out?.linkCount || 0}, set total: ${cipherSet.size})`);
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          _debug: true,
+          event: 'scan_dom_done',
+          tabId,
+          found: arr.length,
+          articleCount: out?.articleCount || 0,
+          linkCount: out?.linkCount || 0,
+          uidCardCount: out?.uidCardCount || 0,
+          ts: new Date().toISOString()
+        })
+      });
+      if (!arr.length) {
+        postSearchEvent({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'scan_dom_empty',
+            title: out?.title || null,
+            articleCount: out?.articleCount || 0,
+            linkCount: out?.linkCount || 0,
+            uidCardCount: out?.uidCardCount || 0,
+            bodyTextPreview: out?.bodyTextPreview || '',
+            error: out?.error || null,
+            ts: new Date().toISOString()
+          })
+        });
+      }
+    } catch(e) {
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _debug: true, event: 'scan_dom_error', tabId, error: e.message, ts: new Date().toISOString() })
+      });
+      console.warn('[upwork-ext] search: DOM scan failed:', e.message);
+    }
+  };
+
+  // Build auth headers from stored tokens
+  const makeAuthHeaders = () => {
+    const tok      = tk.UniversalSearchNuxt_vt || tk.oauth2_global_js_token || tk._bearer || '';
+    const tenantId = tk.current_organization_uid || tk._tenantId || '';
+    const h = { 'Content-Type': 'application/json', 'X-Upwork-Accept-Language': 'en-US' };
+    if (tok)      h['Authorization']        = 'Bearer ' + tok;
+    if (tenantId) h['X-Upwork-API-TenantId'] = tenantId;
+    return h;
+  };
+
+  // ── Approach A: replay stored smf.retrieve.top template ───────────────────
+  // Fastest path — no tab navigation, runs fetch() directly in an existing
+  // Approach A: smf.retrieve.top is a SITE NOTIFICATION endpoint, not a job
+  // search. Ciphers are embedded in SSR HTML and only obtainable by loading the
+  // search page. Skip Approach A entirely — go straight to Approach B.
+  if (false && searchTmpl?.query) {
+    console.log('[upwork-ext] search: have stored smf.retrieve.top template, using direct fetch');
+
+    // Find an open Upwork tab to borrow, or open the home page
+    let proxyTab = null;
+    let didOpenProxy = false;
+    let proxyAttached = false;
+
+    const existingUpworkTabs = await new Promise(r =>
+      chrome.tabs.query({ url: '*://www.upwork.com/*', status: 'complete' }, r)
+    );
+    if (existingUpworkTabs.length > 0) {
+      proxyTab = existingUpworkTabs[0];
+      console.log('[upwork-ext] search: borrowing existing Upwork tab', proxyTab.id);
+    } else {
+      proxyTab = await new Promise(r => chrome.tabs.create({ url: 'https://www.upwork.com/', active: false }, r));
+      didOpenProxy = true;
+      // Wait for load
+      await new Promise(res => {
+        const onUpdated = (tid, info) => {
+          if (tid === proxyTab.id && info.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(onUpdated); res();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(onUpdated);
+        setTimeout(res, 15000);
+      });
+    }
+
+    await new Promise(res =>
+      chrome.debugger.attach({ tabId: proxyTab.id }, '1.3', () => {
+        proxyAttached = !chrome.runtime.lastError;
+        res();
+      })
+    );
+
+    if (proxyAttached) {
+      const headers = { ...searchTmpl.headers, ...makeAuthHeaders() };
+      const maxPages = Math.min(Math.ceil(maxJobs / 10), 20);
+
+      for (let page = 1; page <= maxPages && cipherSet.size < maxJobs; page++) {
+        const vars = JSON.parse(JSON.stringify(searchTmpl.variables || {}));
+        // Inject query + paging into whatever variable shape the template uses
+        [vars, vars.searchRequest, vars.searchInput, vars.searchRequestInput, vars.request]
+          .filter(Boolean)
+          .forEach(v => {
+            if ('query'       in v) v.query       = rawQuery;
+            if ('searchQuery' in v) v.searchQuery  = rawQuery;
+            if ('paging'      in v) v.paging       = { offset: (page - 1) * 10, count: 10 };
+            if ('pagination'  in v) v.pagination   = { first: 10, after: String((page - 1) * 10) };
+          });
+
+        const bodyStr = JSON.stringify({ query: searchTmpl.query, variables: vars });
+        const text = await tabFetch(proxyTab.id, searchTmpl.url, 'POST', headers, bodyStr).catch(() => '');
+        const added = addCiphersFromText(text);
+        console.log(`[upwork-ext] search: template page ${page} → +${added} ciphers (total ${cipherSet.size})`);
+        if (added === 0) break;
+      }
+
+      await new Promise(res => chrome.debugger.detach({ tabId: proxyTab.id }, res));
+    }
+
+    if (didOpenProxy && proxyTab) chrome.tabs.remove(proxyTab.id, () => {});
+  }
+
+  // ── Approach B: navigate search page, passive capture + DOM scan ───────────
+  // Used when no stored template exists OR template returned 0 ciphers.
+  // Opens a VISIBLE (active:true) tab so Chrome doesn't throttle Vue hydration.
+  // searchTab is kept alive after scanning so the lookup loop can reuse it
+  // (already on www.upwork.com with CDP attached and cookies in place).
+  let searchTab = null;
+
+  if (cipherSet.size === 0) {
+    console.log('[upwork-ext] search: falling back to page navigation (active tab)');
+    postSearchEvent({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _debug: true, event: 'scan_approach_b_start', searchUrl, ts: new Date().toISOString() })
+    });
+
+    let tab = null;
+    let detached = false;
+    const collectedResponses = [];
+    const pendingGqlRequests = new Map();
+    let replayCandidate = null;
+    let capturedPostBody = null;
+    let sawUserJobSearchRequest = false;
+    let sawUserJobSearchResponse = false;
+    let lastUserJobSearchDebug = null;
+
+    const getAliasFromUrl = (url) => {
+      try { return new URL(url).searchParams.get('alias') || ''; } catch(_) { return ''; }
+    };
+
+    const isUserJobSearchRequest = (reqMeta = {}) => {
+      const alias = getAliasFromUrl(reqMeta.url || '');
+      const queryText = reqMeta.requestBody?.query || '';
+      return alias === 'userJobSearch'
+        || /query\s+UserJobSearch\b/.test(queryText)
+        || /userJobSearchV1\s*\(/.test(queryText);
+    };
+
+    const countCipherHits = (text) => ((text || '').match(/~0[A-Za-z0-9]+/g) || []).length;
+
+    const pickReplayHeaders = (headers = {}) => {
+      const out = {
+        'Content-Type': 'application/json',
+        'X-Upwork-Accept-Language': 'en-US'
+      };
+      const wanted = [
+        'Authorization',
+        'X-XSRF-TOKEN',
+        'X-Upwork-API-TenantId',
+        'apollographql-client-name',
+        'apollographql-client-version',
+        'x-odesk-user-agent',
+        'x-requested-with'
+      ];
+      for (const key of wanted) {
+        const foundKey = Object.keys(headers).find((headerKey) => headerKey.toLowerCase() === key.toLowerCase());
+        if (foundKey && headers[foundKey]) out[key] = headers[foundKey];
+      }
+      return out;
+    };
+
+    const inspectUserJobSearchText = (text) => {
+      if (!text || typeof text !== 'string') {
+        return {
+          added: 0,
+          returnedCount: 0,
+          totalAvailable: 0,
+          ids: [],
+          errors: [],
+          status: null,
+          preview: ''
+        };
+      }
+      try {
+        const payload = JSON.parse(text);
+        const searchResp = payload?.data?.search?.universalSearchNuxt?.userJobSearchV1;
+        const results = Array.isArray(searchResp?.results) ? searchResp.results : [];
+        const ids = [];
+        for (const item of results) {
+          const jobId = item?.jobTile?.job?.id || item?.id || null;
+          const cipher = item?.jobTile?.job?.ciphertext || item?.jobTile?.job?.cipherText || null;
+          if (jobId) ids.push(jobId);
+        }
+        return {
+          added: 0,
+          returnedCount: results.length,
+          totalAvailable: Number(searchResp?.paging?.total || 0),
+          ids,
+          errors: Array.isArray(payload?.errors) ? payload.errors : [],
+          status: payload?._status || null,
+          preview: text.slice(0, 4000)
+        };
+      } catch(_) {
+        return {
+          added: 0,
+          returnedCount: 0,
+          totalAvailable: 0,
+          ids: [],
+          errors: [],
+          status: null,
+          preview: text.slice(0, 4000)
+        };
+      }
+    };
+
+    const addCiphersFromUserJobSearchText = (text, source = 'unknown') => {
+      if (!text || typeof text !== 'string') return { added: 0, returnedCount: 0, totalAvailable: 0 };
+      try {
+        const payload = JSON.parse(text);
+        const searchResp = payload?.data?.search?.universalSearchNuxt?.userJobSearchV1;
+        const results = Array.isArray(searchResp?.results) ? searchResp.results : [];
+        let added = 0;
+        for (const item of results) {
+          const jobId = item?.jobTile?.job?.id || item?.id || null;
+          const cipher = item?.jobTile?.job?.ciphertext || item?.jobTile?.job?.cipherText
+            || (jobId ? '~02' + jobId : null);
+          if (jobId && cipher && !searchJobMap.has(cipher)) {
+            searchJobMap.set(cipher, {
+              id: jobId,
+              cipher,
+              title: item?.title || '',
+              publishTime: item?.jobTile?.job?.publishTime || null
+            });
+          }
+          if (cipher && !cipherSet.has(cipher)) {
+            cipherSet.add(cipher);
+            added++;
+          }
+        }
+        const inspected = inspectUserJobSearchText(text);
+        lastUserJobSearchDebug = {
+          source,
+          returnedCount: inspected.returnedCount,
+          totalAvailable: inspected.totalAvailable,
+          ids: inspected.ids.slice(0, 20),
+          errors: inspected.errors,
+          status: inspected.status,
+          preview: inspected.preview
+        };
+        return {
+          added,
+          returnedCount: results.length,
+          totalAvailable: Number(searchResp?.paging?.total || 0)
+        };
+      } catch(_) {
+        const inspected = inspectUserJobSearchText(text);
+        lastUserJobSearchDebug = {
+          source,
+          returnedCount: inspected.returnedCount,
+          totalAvailable: inspected.totalAvailable,
+          ids: inspected.ids.slice(0, 20),
+          errors: inspected.errors,
+          status: inspected.status,
+          preview: inspected.preview
+        };
+        return { added: 0, returnedCount: 0, totalAvailable: 0 };
+      }
+    };
+
+    const mutateReplayVariables = (node, pageNum, pageSize = null) => {
+      if (!node || typeof node !== 'object') return;
+
+      if (node.requestVariables && typeof node.requestVariables === 'object') {
+        if (rawQuery) node.requestVariables.userQuery = rawQuery;
+        const requestPaging = node.requestVariables.paging || {};
+        const nextCount = Number.isFinite(pageSize) ? pageSize : (Number.isFinite(requestPaging.count) ? requestPaging.count : 10);
+        node.requestVariables.paging = {
+          ...requestPaging,
+          offset: (pageNum - 1) * nextCount,
+          count: nextCount
+        };
+      }
+
+      for (const [key, value] of Object.entries(node)) {
+        if (typeof value === 'string') {
+          if ((key === 'query' || key === 'searchQuery' || key === 'searchTerm' || key === 'q' || key === 'userQuery') && rawQuery) {
+            node[key] = rawQuery;
+          }
+          continue;
+        }
+        if (!value || typeof value !== 'object') continue;
+
+        if (key === 'paging') {
+          const nextCount = Number.isFinite(pageSize) ? pageSize : (Number.isFinite(value.count) ? value.count : (Number.isFinite(value.limit) ? value.limit : 10));
+          node[key] = { ...value, offset: (pageNum - 1) * nextCount, count: nextCount };
+          continue;
+        }
+        if (key === 'pagination') {
+          const nextFirst = Number.isFinite(pageSize) ? pageSize : (Number.isFinite(value.first) ? value.first : 10);
+          node[key] = { ...value, first: nextFirst, after: String((pageNum - 1) * nextFirst) };
+          continue;
+        }
+        if (key === 'page' && typeof value === 'number') {
+          node[key] = pageNum;
+          continue;
+        }
+        if (key === 'offset' && typeof value === 'number') {
+          const pageSize = Number.isFinite(node.count) ? node.count : (Number.isFinite(node.limit) ? node.limit : 10);
+          node[key] = (pageNum - 1) * pageSize;
+          continue;
+        }
+        if (key === 'from' && typeof value === 'number') {
+          const pageSize = Number.isFinite(node.size) ? node.size : (Number.isFinite(node.count) ? node.count : 10);
+          node[key] = (pageNum - 1) * pageSize;
+          continue;
+        }
+        mutateReplayVariables(value, pageNum, pageSize);
+      }
+    };
+
+    const replaySearchPage = async (pageNum, pageSize = null) => {
+      if (!replayCandidate?.requestBody) {
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'replay_no_candidate',
+            pageNum,
+            hasCandidateObj: !!replayCandidate,
+            sawRequest: sawUserJobSearchRequest,
+            sawResponse: sawUserJobSearchResponse,
+            ts: new Date().toISOString()
+          })
+        }).catch(() => {});
+        return null;
+      }
+      const requestBody = JSON.parse(JSON.stringify(replayCandidate.requestBody));
+      mutateReplayVariables(requestBody.variables || requestBody, pageNum, pageSize);
+      const replayAlias = getAliasFromUrl(replayCandidate.url);
+
+      // XSRF: prefer the value captured live from the page's own requests
+      const capturedXsrf = liveGraphqlHeaders?.xsrf
+        || replayCandidate.headers?.['X-XSRF-TOKEN']
+        || replayCandidate.headers?.['x-xsrf-token']
+        || '';
+
+      // The userJobSearch GQL endpoint belongs to the UniversalSearchNuxt microapp.
+      // Each Upwork microapp has its own _vt (visitor token) cookie used as Authorization.
+      // Use CDP Network.getCookies (reads HttpOnly cookies) to get it.
+      // Also read current_organization_uid cookie as the matching tenant ID for this token.
+      let ujsToken = '';
+      let ujsTenantId = '';
+      try {
+        const cookieResult = await chrome.debugger.sendCommand(
+          { tabId: tab.id }, 'Network.getCookies', { urls: ['https://www.upwork.com'] }
+        );
+        const cookies = cookieResult?.cookies || [];
+        const vtCookie = cookies.find(c => c.name === 'UniversalSearchNuxt_vt');
+        if (vtCookie?.value) ujsToken = 'bearer ' + vtCookie.value;
+        // Fallback: try asct_vt or any _vt cookie
+        if (!ujsToken) {
+          const fallbackVt = cookies.find(c => c.name === 'asct_vt' || c.name.endsWith('_vt'));
+          if (fallbackVt?.value) ujsToken = 'bearer ' + fallbackVt.value;
+        }
+        // current_organization_uid is the tenant ID for the logged-in user's active org
+        const orgCookie = cookies.find(c => c.name === 'current_organization_uid');
+        if (orgCookie?.value) ujsTenantId = orgCookie.value;
+      } catch(_) {}
+
+      fetch(EXT_CONFIG.WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          _debug: true,
+          event: 'replay_page_start',
+          pageNum,
+          pageSize,
+          url: replayCandidate.url,
+          alias: replayAlias,
+          isUserJobSearch: isUserJobSearchRequest(replayCandidate),
+          ujsTenantId,
+          hasCapturedXsrf: !!capturedXsrf,
+          hasCapturedAuth: !!(liveGraphqlHeaders?.authorization),
+          hasUjsToken: !!ujsToken,
+          hasApolloClientName: !!apolloClientName,
+          hasApolloClientVersion: !!apolloClientVersion,
+          ts: new Date().toISOString()
+        })
+      }).catch(() => {});
+
+      // Run the fetch inside the tab so session cookies are sent automatically.
+      // Use the UniversalSearchNuxt_vt microapp token (read via CDP getCookies) as Authorization.
+      // XSRF: use captured value first, then fall back to reading from document.cookie.
+      const capturedAuth = ujsToken || liveGraphqlHeaders?.authorization || '';
+      const replayBodyStr = JSON.stringify(requestBody);
+      const replayUrl = replayCandidate.url;
+
+      // Forward apollo client identification headers from the original captured request.
+      // Upwork's GQL gateway uses apollographql-client-name to resolve the OAuth2 client's
+      // allowed field scopes. Without these, the server falls back to a lower-privileged
+      // client and rejects protected fields with "ExecutionAborted" permission errors.
+      const _rch = replayCandidate.headers || {};
+      const _findHeader = (obj, ...names) => {
+        for (const n of names) {
+          const k = Object.keys(obj).find(h => h.toLowerCase() === n.toLowerCase());
+          if (k && obj[k]) return obj[k];
+        }
+        return '';
+      };
+      const apolloClientName    = _findHeader(_rch, 'apollographql-client-name');
+      const apolloClientVersion = _findHeader(_rch, 'apollographql-client-version');
+      const odeskUserAgent      = _findHeader(_rch, 'x-odesk-user-agent');
+      const requestedWith       = _findHeader(_rch, 'x-requested-with');
+
+      const replayExpr = `(async () => {
+  try {
+    const capturedXsrf = ${JSON.stringify(capturedXsrf)};
+    const cookieXsrfRaw = (document.cookie.match(/(?:^|;\\s*)XSRF-TOKEN=([^;]+)/) || [])[1] || '';
+    const cookieXsrf = cookieXsrfRaw ? decodeURIComponent(cookieXsrfRaw) : '';
+    const xsrf = capturedXsrf || cookieXsrf;
+    const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+    if (${JSON.stringify(capturedAuth)}) headers['Authorization'] = ${JSON.stringify(capturedAuth)};
+    if (xsrf) headers['X-XSRF-TOKEN'] = xsrf;
+    // Only send tenantId when it came from live captured headers (matching the real auth token).
+    // The UniversalSearchNuxt_vt microapp token is NOT associated with current_organization_uid
+    // — sending a mismatched tenantId causes 403 "tenant not found in users tenants".
+    if (${JSON.stringify(!ujsToken && !!ujsTenantId)}) headers['X-Upwork-API-TenantId'] = ${JSON.stringify(ujsTenantId)};
+    // Forward apollo client headers so Upwork's GQL gateway recognises the OAuth2 client
+    // and grants the field-level permissions it needs (prevents ExecutionAborted errors).
+    if (${JSON.stringify(apolloClientName)})    headers['apollographql-client-name']    = ${JSON.stringify(apolloClientName)};
+    if (${JSON.stringify(apolloClientVersion)}) headers['apollographql-client-version'] = ${JSON.stringify(apolloClientVersion)};
+    if (${JSON.stringify(odeskUserAgent)})      headers['x-odesk-user-agent']           = ${JSON.stringify(odeskUserAgent)};
+    if (${JSON.stringify(requestedWith)})       headers['x-requested-with']             = ${JSON.stringify(requestedWith)};
+    const r = await fetch(${JSON.stringify(replayUrl)}, {
+      method: 'POST', credentials: 'include', headers,
+      body: ${JSON.stringify(replayBodyStr)}
+    });
+    const txt = await r.text();
+    if (!r.ok) return JSON.stringify({ _status: r.status, _body: txt.slice(0,500) });
+    return txt;
+  } catch(e) { return JSON.stringify({ _error: e.message }); }
+})()`;
+
+      let text = '';
+      try {
+        const res = await chrome.debugger.sendCommand(
+          { tabId: tab.id }, 'Runtime.evaluate',
+          { expression: replayExpr, awaitPromise: true, returnByValue: true }
+        );
+        text = res.result?.value || '';
+      } catch(error) {
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'replay_page_error',
+            pageNum,
+            pageSize,
+            error: error.message,
+            ts: new Date().toISOString()
+          })
+        }).catch(() => {});
+      }
+      const isUJS = isUserJobSearchRequest(replayCandidate);
+      const replayStats = isUJS
+        ? addCiphersFromUserJobSearchText(text, 'replay')
+        : { added: addCiphersFromText(text), returnedCount: 0, totalAvailable: 0 };
+      fetch(EXT_CONFIG.WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          _debug: true,
+          event: 'replay_page_done',
+          pageNum,
+          pageSize,
+          alias: replayAlias,
+          isUserJobSearch: isUJS,
+          added: replayStats.added,
+          returnedCount: replayStats.returnedCount,
+          totalAvailable: replayStats.totalAvailable,
+          totalCiphers: cipherSet.size,
+          responseLen: (text || '').length,
+          responsePreview: (text || '').slice(0, 4000),
+          ts: new Date().toISOString()
+        })
+      }).catch(() => {});
+      return replayStats;
+    };
+
+    const waitForUserJobSearchResponse = async (timeoutMs) => {
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        if (searchJobMap.size > 0 || sawUserJobSearchResponse) return true;
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getNavigationHistory', {}).catch(() => {});
+      }
+      return searchJobMap.size > 0 || sawUserJobSearchResponse;
+    };
+
+    const cleanup = () => {
+      if (detached) return;
+      detached = true;
+      chrome.debugger.onEvent.removeListener(searchListener);
+      if (tab) chrome.debugger.detach({ tabId: tab.id }, () => chrome.tabs.remove(tab.id, () => {}));
+    };
+
+    const searchListener = async (source, method, params) => {
+      if (!tab || source.tabId !== tab.id) return;
+
+      // Track GQL requests from requestWillBeSent (URL always present here, unlike responseReceived)
+      if (method === 'Network.requestWillBeSent' && params.request?.url?.includes('/api/graphql/v1')) {
+        let requestBody = null;
+        if (params.request.postData) {
+          try { requestBody = JSON.parse(params.request.postData); } catch(_) {}
+        }
+        const reqMeta = {
+          url: params.request.url,
+          headers: params.request.headers || {},
+          requestBody
+        };
+        pendingGqlRequests.set(params.requestId, reqMeta);
+
+        if (reqMeta.requestBody && isUserJobSearchRequest(reqMeta)) {
+          sawUserJobSearchRequest = true;
+          const currentIsUserJobSearch = isUserJobSearchRequest(replayCandidate || {});
+          if (!currentIsUserJobSearch) {
+            replayCandidate = {
+              url: reqMeta.url,
+              headers: reqMeta.headers,
+              requestBody: reqMeta.requestBody,
+              cipherHits: replayCandidate?.cipherHits || 0
+            };
+          }
+        }
+
+        const rh = params.request.headers || {};
+        const auth = rh['Authorization'] || rh['authorization'] || '';
+        if (!liveGraphqlHeaders && auth.toLowerCase().startsWith('bearer ') && auth.length > 20) {
+          liveGraphqlHeaders = {
+            authorization: auth,
+            xsrf: rh['X-XSRF-TOKEN'] || rh['x-xsrf-token'] || '',
+            tenantId: rh['X-Upwork-API-TenantId'] || rh['x-upwork-api-tenantid'] || ''
+          };
+          console.log('[upwork-ext] search: captured live GraphQL auth headers from search tab');
+        }
+
+        // Legacy capture kept for debug only.
+        if (params.request.url.includes('smf.retrieve.top') &&
+            params.request?.postData && !capturedPostBody) {
+          try { capturedPostBody = JSON.parse(params.request.postData); } catch(_) {}
+          console.log('[upwork-ext] search: captured smf.retrieve.top POST body');
+        }
+      }
+
+      if (method === 'Network.loadingFinished' && pendingGqlRequests.has(params.requestId)) {
+        const reqMeta = pendingGqlRequests.get(params.requestId);
+        pendingGqlRequests.delete(params.requestId);
+        try {
+          const body = await chrome.debugger.sendCommand(
+            { tabId: tab.id }, 'Network.getResponseBody', { requestId: params.requestId }
+          );
+          if (body?.body) {
+            const text = body.base64Encoded
+              ? new TextDecoder().decode(Uint8Array.from(atob(body.body), c => c.charCodeAt(0)))
+              : body.body;
+            collectedResponses.push({ text, reqMeta });
+            const cipherHits = countCipherHits(text);
+            if (reqMeta?.requestBody && isUserJobSearchRequest(reqMeta)) {
+              sawUserJobSearchResponse = true;
+              addCiphersFromUserJobSearchText(text, 'captured-response');
+              replayCandidate = {
+                url: reqMeta.url,
+                headers: reqMeta.headers,
+                requestBody: reqMeta.requestBody,
+                cipherHits: Math.max(replayCandidate?.cipherHits || 0, cipherHits)
+              };
+            }
+            if (cipherHits > 0 && reqMeta?.requestBody) {
+              const reqIsUserJobSearch = isUserJobSearchRequest(reqMeta);
+              const currentIsUserJobSearch = isUserJobSearchRequest(replayCandidate || {});
+              const currentHits = replayCandidate?.cipherHits || 0;
+              if ((reqIsUserJobSearch && !currentIsUserJobSearch) ||
+                  (reqIsUserJobSearch === currentIsUserJobSearch && cipherHits > currentHits)) {
+                replayCandidate = {
+                  url: reqMeta.url,
+                  headers: reqMeta.headers,
+                  requestBody: reqMeta.requestBody,
+                  cipherHits
+                };
+              }
+            }
+            console.log(`[upwork-ext] search: passive GQL body captured, len=${text.length}`);
+          }
+        } catch(_) {}
+      }
+    };
+
+    try {
+      // active: true — prevents Chrome background-tab JS throttling that kills Vue hydration
+      tab = await new Promise(r => chrome.tabs.create({ url: 'about:blank', active: true }, r));
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _debug: true, event: 'scan_tab_opened', tabId: tab.id, ts: new Date().toISOString() })
+      });
+
+      await new Promise((res, rej) =>
+        chrome.debugger.attach({ tabId: tab.id }, '1.3', () =>
+          chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res()
+        )
+      );
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _debug: true, event: 'scan_tab_cdp_attached', tabId: tab.id, ts: new Date().toISOString() })
+      });
+
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable', {});
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Runtime.enable', {});
+      try {
+        // Suppress webdriver flag so Upwork doesn't bot-detect us
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.addScriptToEvaluateOnNewDocument',
+          { source: `Object.defineProperty(navigator,'webdriver',{get:()=>undefined});` });
+      } catch(_) {}
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.enable', {
+        maxResourceBufferSize: 50 * 1024 * 1024, maxTotalBufferSize: 200 * 1024 * 1024
+      });
+      chrome.debugger.onEvent.addListener(searchListener);
+
+      // cdpWait: keep the MV3 SW alive after page load without depending on a
+      // stable JS execution context inside the tab. Runtime.evaluate can hang on
+      // Upwork's SPA after load; Page.getNavigationHistory does not.
+      const cdpWait = async (ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getNavigationHistory', {}).catch(() => {});
+        }
+      };
+
+      // waitForPageLoad: resolves once either CDP loadEventFired OR the normal
+      // tabs.onUpdated complete event fires for this tab. Some later search pages
+      // can hang on Page.navigate in MV3 even though the tab-level navigation works.
+      const waitForPageLoad = (pageNum) => new Promise((resolve) => {
+        let done = false;
+        const finish = (reason) => {
+          if (done) return;
+          done = true;
+          chrome.debugger.onEvent.removeListener(onEvt);
+          chrome.tabs.onUpdated.removeListener(onTabUpdated);
+          fetch(EXT_CONFIG.WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ _debug: true, event: 'page_loaded', reason, pageNum, ts: new Date().toISOString() })
+          }).catch(() => {});
+          resolve(reason);
+        };
+        const onEvt = (src, method) => {
+          if (src.tabId === tab.id && method === 'Page.loadEventFired') finish('load');
+        };
+        const onTabUpdated = (updatedTabId, info) => {
+          if (updatedTabId === tab.id && info.status === 'complete') finish('tab_complete');
+        };
+        chrome.debugger.onEvent.addListener(onEvt);
+        chrome.tabs.onUpdated.addListener(onTabUpdated);
+        // Safety fallback: 20s timeout using the non-JS CDP loop so no bare setTimeout gap.
+        (async () => {
+          const end = Date.now() + 20000;
+          while (Date.now() < end && !done) {
+            await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getNavigationHistory', {}).catch(() => {});
+          }
+          finish('timeout_20s');
+        })();
+      });
+
+      const navigateAndScan = async (url, pageNum) => {
+        const prevCount = cipherSet.size;
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _debug: true, event: 'nav_start', pageNum, url, ciphersBefore: prevCount, ts: new Date().toISOString() })
+        }).catch(() => {});
+        try {
+          await new Promise((res, rej) =>
+            chrome.tabs.update(tab.id, { url }, (updatedTab) => {
+              if (chrome.runtime.lastError) {
+                rej(new Error(chrome.runtime.lastError.message));
+                return;
+              }
+              res(updatedTab);
+            })
+          );
+        } catch(navErr) {
+          fetch(EXT_CONFIG.WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ _debug: true, event: 'nav_error', pageNum, url, error: navErr.message, ts: new Date().toISOString() })
+          }).catch(() => {});
+        }
+        // Phase 1: wait for Page.loadEventFired.
+        // CDP events during load (Network.*, etc.) fire through chrome.debugger.onEvent
+        // and each event resets the SW idle timer — the page load itself is the keepalive.
+        const loadReason = await waitForPageLoad(pageNum);
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _debug: true, event: 'nav_postload_wait', pageNum, loadReason, ts: new Date().toISOString() })
+        }).catch(() => {});
+        // Phase 2: Vue hydration finishes after load.
+        await cdpWait(3000);
+
+        // Phase 3: DOM scan — extract ciphers directly from the SSR HTML.
+        // Upwork embeds ~02... ciphertexts in the server-rendered page source.
+        try {
+          const htmlResult = await chrome.debugger.sendCommand(
+            { tabId: tab.id }, 'Runtime.evaluate',
+            { expression: `document.documentElement.outerHTML`, returnByValue: true }
+          );
+          if (htmlResult?.result?.value) {
+            const domAdded = addCiphersFromText(htmlResult.result.value);
+            console.log(`[upwork-ext] search: DOM scan page ${pageNum} → +${domAdded} ciphers`);
+          }
+        } catch(_) {}
+
+        if (pageNum === 1 && sawUserJobSearchRequest && searchJobMap.size === 0) {
+          fetch(EXT_CONFIG.WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ _debug: true, event: 'nav_waiting_for_ujs_response', pageNum, ts: new Date().toISOString() })
+          }).catch(() => {});
+          await waitForUserJobSearchResponse(8000);
+        }
+        let usedApiBodies = 0;
+        for (const entry of collectedResponses.splice(0)) {
+          if (isUserJobSearchRequest(entry.reqMeta)) {
+            usedApiBodies += 1;
+            addCiphersFromUserJobSearchText(entry.text, 'queued-response');
+          }
+        }
+        let added = cipherSet.size - prevCount;
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'nav_done',
+            pageNum, url, added, usedApiBodies,
+            totalCiphers: cipherSet.size,
+            loadReason,
+            sawRequest: sawUserJobSearchRequest,
+            sawResponse: sawUserJobSearchResponse,
+            hasReplayCandidate: !!replayCandidate?.requestBody,
+            hasLiveAuth: !!(liveGraphqlHeaders?.authorization),
+            collectedResponsesLen: collectedResponses.length,
+            ts: new Date().toISOString()
+          })
+        }).catch(() => {});
+        return added;
+      };
+
+      // ── Page 1 ──
+      const added1 = await navigateAndScan(searchUrl, 1);
+      console.log(`[upwork-ext] search: page 1 → +${added1} ciphers, total ${cipherSet.size}`);
+
+      // ── Page-2 click trigger ──
+      // Upwork search page 1 is fully SSR — no userJobSearch GQL fires on initial load.
+      // Once the SPA hydrates, clicking "Next Page" triggers a real client-side navigation
+      // that fires userJobSearch with the user's actual auth token, which CDP intercepts.
+      // We use those real headers as replayCandidate for all subsequent page replays.
+      if (!isUserJobSearchRequest(replayCandidate || {})) {
+        sawUserJobSearchRequest = false;
+        sawUserJobSearchResponse = false;
+        let page2ClickedSel = null;
+        try {
+          const clickRes = await chrome.debugger.sendCommand(
+            { tabId: tab.id }, 'Runtime.evaluate',
+            {
+              expression: `(() => {
+                const selectors = [
+                  '[data-test="pagination-next"] a',
+                  '[data-test="pagination-next"]',
+                  'button[aria-label="Next page"]',
+                  'a[aria-label="Next page"]',
+                  '[data-ev-label="pagination_next"]',
+                  '.air3-pagination a[href*="page=2"]',
+                  'nav[aria-label*="agination"] a:last-child',
+                  '[data-cy="pagination-btn-next"]'
+                ];
+                for (const sel of selectors) {
+                  const el = document.querySelector(sel);
+                  if (el && !el.hasAttribute('disabled') && !el.classList.contains('disabled')) {
+                    el.click();
+                    return sel;
+                  }
+                }
+                return null;
+              })()`,
+              returnByValue: true
+            }
+          );
+          page2ClickedSel = clickRes?.result?.value || null;
+        } catch(_) {}
+
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true, event: 'page2_click_attempt',
+            clicked: !!page2ClickedSel, selector: page2ClickedSel,
+            hadRealUJS: isUserJobSearchRequest(replayCandidate || {}),
+            ts: new Date().toISOString()
+          })
+        }).catch(() => {});
+
+        if (page2ClickedSel) {
+          // Give the SPA time to start the GQL request, then wait for completion.
+          // This is a client-side SPA navigation so Page.loadEventFired may not fire.
+          await cdpWait(1000);
+          await waitForUserJobSearchResponse(10000);
+          // DOM scan on page 2 for extra ciphers from SSR fragment (if any)
+          try {
+            const htmlResult = await chrome.debugger.sendCommand(
+              { tabId: tab.id }, 'Runtime.evaluate',
+              { expression: `document.documentElement.outerHTML`, returnByValue: true }
+            );
+            if (htmlResult?.result?.value) {
+              const domAdded2 = addCiphersFromText(htmlResult.result.value);
+              console.log(`[upwork-ext] search: page 2 DOM scan → +${domAdded2} ciphers`);
+            }
+          } catch(_) {}
+          // Drain any queued responses from the page 2 GQL call
+          for (const entry of collectedResponses.splice(0)) {
+            if (isUserJobSearchRequest(entry.reqMeta)) {
+              addCiphersFromUserJobSearchText(entry.text, 'page2-queued-response');
+            }
+          }
+          fetch(EXT_CONFIG.WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              _debug: true, event: 'page2_nav_done',
+              sawRequest: sawUserJobSearchRequest,
+              sawResponse: sawUserJobSearchResponse,
+              hasRealUJS: isUserJobSearchRequest(replayCandidate || {}),
+              hasReplayCandidate: !!replayCandidate?.requestBody,
+              totalCiphers: cipherSet.size,
+              ts: new Date().toISOString()
+            })
+          }).catch(() => {});
+        }
+      }
+
+      if (!replayCandidate?.requestBody) {
+        // Always build a fallback — uses the minimal query with only id+paging (no restricted fields).
+        // Auth (ujsToken + ujsTenantId) is read fresh from cookies in replaySearchPage.
+        replayCandidate = {
+          url: 'https://www.upwork.com/api/graphql/v1?alias=userJobSearch',
+          headers: {},
+          requestBody: {
+            query: USER_JOB_SEARCH_FALLBACK_QUERY,
+            variables: {
+              requestVariables: {
+                userQuery: rawQuery,
+                sort: 'recency+desc',
+                highlight: false,
+                paging: { offset: 0, count: 10 }
+              }
+            }
+          },
+          cipherHits: 0
+        };
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'fallback_candidate_set',
+            rawQuery,
+            ciphersFromDom: cipherSet.size,
+            ts: new Date().toISOString()
+          })
+        }).catch(() => {});
+      }
+
+      if (replayCandidate?.requestBody) {
+        postSearchEvent({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'scan_replay_selected',
+            url: replayCandidate.url,
+            alias: getAliasFromUrl(replayCandidate.url),
+            cipherHits: replayCandidate.cipherHits,
+            hasAuthorization: !!(replayCandidate.headers?.Authorization || replayCandidate.headers?.authorization || liveGraphqlHeaders?.authorization),
+            ts: new Date().toISOString()
+          })
+        });
+      }
+
+      // ── Direct replay path: use one captured userJobSearch request with larger counts ──
+      let usedDirectReplay = false;
+      if (replayCandidate?.requestBody && isUserJobSearchRequest(replayCandidate)) {
+        usedDirectReplay = true;
+        const batchSize = Math.min(Math.max(maxJobs, 10), 100);
+        const firstReplay = await replaySearchPage(1, batchSize);
+        const totalAvailable = Number(firstReplay?.totalAvailable || 0);
+        const replayPages = Math.max(1, Math.ceil(Math.min(maxJobs, totalAvailable || maxJobs) / batchSize));
+        console.log(`[upwork-ext] search: replay batch 1 → +${firstReplay?.added || 0} ciphers, total ${cipherSet.size}`);
+        for (let page = 2; page <= replayPages && cipherSet.size < maxJobs; page++) {
+          const replayStats = await replaySearchPage(page, batchSize);
+          console.log(`[upwork-ext] search: replay batch ${page} → +${replayStats?.added || 0} ciphers, total ${cipherSet.size}`);
+          if (!replayStats || replayStats.returnedCount === 0 || replayStats.added === 0) break;
+        }
+      }
+
+      if (!usedDirectReplay) {
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _debug: true,
+            event: 'replay_skipped',
+            reason: replayCandidate?.requestBody ? 'replayCandidate not userJobSearch' : 'no replayCandidate captured',
+            hasReplayCandidate: !!replayCandidate?.requestBody,
+            isUserJobSearch: isUserJobSearchRequest(replayCandidate || {}),
+            sawRequest: sawUserJobSearchRequest,
+            sawResponse: sawUserJobSearchResponse,
+            hasLiveAuth: !!(liveGraphqlHeaders?.authorization),
+            totalCiphers: cipherSet.size,
+            ts: new Date().toISOString()
+          })
+        }).catch(() => {});
+      }
+
+      chrome.debugger.onEvent.removeListener(searchListener);
+    } catch(e) {
+      console.warn('[upwork-ext] search: page navigation approach error:', e.message);
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _debug: true, event: 'scan_approach_b_error', error: e.message, tabId: tab?.id ?? null, ciphersSoFar: cipherSet.size, ts: new Date().toISOString() })
+      });
+      // On error: keep the tab alive if we have one — hand it off to lookup anyway
+      if (!detached && tab) {
+        detached = true;
+        chrome.debugger.onEvent.removeListener(searchListener);
+        searchTab = tab; // still hand off — tab is on Upwork, CDP attached
+      }
+    } finally {
+      // Ensure searchTab is always set if tab exists (even after catch)
+      if (tab && !searchTab) {
+        searchTab = tab;
+      }
+      postSearchEvent({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _debug: true, event: 'scan_approach_b_finally', searchTabSet: !!searchTab, searchTabId: searchTab?.id ?? null, ciphersCollected: cipherSet.size, ts: new Date().toISOString() })
+      });
+    }
+  }
+
+  // ── Debug: send collected ciphers to webhook before starting lookup ─────────
+  const ciphers = [...cipherSet].slice(0, maxJobs);
+  const collectedJobs = ciphers.map((cipher) => searchJobMap.get(cipher) || { id: null, cipher, title: '' });
+  console.log(`[upwork-ext] search: total ciphers collected: ${ciphers.length}`);
+  fetch(EXT_CONFIG.WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      _debug: true,
+      event: 'search_ids_collected',
+      query: searchQuery,
+      searchUrl,
+      totalFound: ciphers.length,
+      ids: collectedJobs.map((job) => job.id).filter(Boolean),
+      jobs: collectedJobs,
+      ts: new Date().toISOString()
+    })
+  }).catch(() => {});
+  if (!ciphers.length && lastUserJobSearchDebug) {
+    fetch(EXT_CONFIG.WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _debug: true,
+        event: 'search_api_response_debug',
+        query: searchQuery,
+        searchUrl,
+        source: lastUserJobSearchDebug.source,
+        returnedCount: lastUserJobSearchDebug.returnedCount,
+        totalAvailable: lastUserJobSearchDebug.totalAvailable,
+        idsSample: lastUserJobSearchDebug.ids,
+        errors: lastUserJobSearchDebug.errors,
+        status: lastUserJobSearchDebug.status,
+        responsePreview: lastUserJobSearchDebug.preview,
+        ts: new Date().toISOString()
+      })
+    }).catch(() => {});
+  }
+  postSearchEvent({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      _debug: true,
+      event: 'search_ciphers_collected',
+      query: searchQuery,
+      searchUrl,
+      totalFound: ciphers.length,
+      ciphers,
+      ts: new Date().toISOString()
+    })
+  });
+
+  if (!ciphers.length) {
+    console.warn('[upwork-ext] runSearchLookup: no ciphertexts found');
+    setSearchProgress({ active: false, query: searchQuery, phase: 'done', found: 0, processed: 0, total: 0, error: 'No jobs found' });
+    return;
+  }
+
+  console.log(`[upwork-ext] runSearchLookup: found ${ciphers.length} ciphers, processing...`);
+  setSearchProgress({ active: true, query: searchQuery, phase: 'lookup', found: ciphers.length, processed: 0, total: ciphers.length });
+
+  // Load tokens harvested by CDP — HttpOnly cookies are not accessible via document.cookie
+  // but are captured here from raw request headers by the network event listener.
+  // Refresh from storage (tokens may have been updated during the search navigation above).
+  const tkRefresh = await new Promise(r => chrome.storage.local.get(['sessionTokens'], r));
+  const tkLatest = tkRefresh.sessionTokens || {};
+  let storedBearer   = tkLatest['oauth2_global_js_token'] || tkLatest['master_access_token'] || tkLatest['_bearer'] || '';
+  let storedTenantId = tkLatest['current_organization_uid'] || tkLatest['_tenantId'] || '';
+  let storedXsrf     = tkLatest['XSRF-TOKEN'] || '';
+
+  // ── Fallback: pull tokens directly from the live search tab context ─────────
+  // If the global CDP listener hasn't yet persisted cookies to sessionTokens,
+  // extract them via Runtime.evaluate from the tab currently on www.upwork.com.
+  if ((!storedBearer || !storedXsrf) && searchTab) {
+    try {
+      const cookieEval = await chrome.debugger.sendCommand(
+        { tabId: searchTab.id }, 'Runtime.evaluate',
+        {
+          expression: `(function(){
+  var c = {};
+  document.cookie.split(';').forEach(function(p) {
+    var kv = p.trim().split('=');
+    if (kv.length >= 2) c[kv[0].trim()] = decodeURIComponent(kv.slice(1).join('='));
+  });
+  return JSON.stringify({
+    bearer:   c['oauth2_global_js_token'] || c['master_access_token'] || '',
+    tenantId: c['current_organization_uid'] || '',
+    xsrf:     c['XSRF-TOKEN'] || ''
+  });
+})()`,
+          returnByValue: true
+        }
+      );
+      const tabCookies = JSON.parse(cookieEval?.result?.value || '{}');
+      if (tabCookies.bearer)   storedBearer   = storedBearer   || tabCookies.bearer;
+      if (tabCookies.tenantId) storedTenantId = storedTenantId || tabCookies.tenantId;
+      if (tabCookies.xsrf)     storedXsrf     = storedXsrf     || tabCookies.xsrf;
+      console.log('[upwork-ext] lookup: extracted cookies from search tab, bearer present:', !!tabCookies.bearer);
+    } catch(e) {
+      console.warn('[upwork-ext] lookup: could not extract cookies from search tab:', e.message);
+    }
+  }
+
+  // ── Debug: report token availability before attempting lookup ───────────────
+  fetch(EXT_CONFIG.WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      _debug: true,
+      event: 'lookup_token_check',
+      hasBearer:   !!storedBearer,
+      hasTenantId: !!storedTenantId,
+      hasXsrf:     !!storedXsrf,
+      bearerPrefix: storedBearer ? storedBearer.slice(0, 12) + '…' : null,
+      searchTabId:  searchTab ? searchTab.id : null,
+      proxyTabIdWillBe: searchTab ? searchTab.id : 'none—fallback',
+      ts: new Date().toISOString()
+    })
+  }).catch(() => {});
+
+  if (!storedBearer) {
+    console.warn('[upwork-ext] runSearchLookup: no bearer token — will rely on cookie-based auth from search tab.');
+    // Do NOT abort: fetchJobInTab uses credentials:include so Upwork session cookies
+    // will authenticate the request even without an explicit Authorization header.
+  }
+
+  // Reuse the search tab for lookups — it's already on www.upwork.com with
+  // CDP attached and all session cookies in place.
+  // If Approach A was used (no search tab opened), fall back to finding any open Upwork tab.
+  let proxyTabId = searchTab ? searchTab.id : null;
+  let proxyDidAttach = false;
+  let proxyDidOpen = false;
+
+  try {
+    if (!proxyTabId) {
+      // No search tab — find an existing Upwork tab or open a new one
+      const upworkTabs = await new Promise(r =>
+        chrome.tabs.query({ url: '*://www.upwork.com/*', status: 'complete' }, r)
+      );
+      if (upworkTabs.length > 0) {
+        proxyTabId = upworkTabs[0].id;
+        console.log('[upwork-ext] lookup: borrowing existing Upwork tab', proxyTabId);
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _debug: true, event: 'lookup_borrowed_tab', proxyTabId, ts: new Date().toISOString() })
+        }).catch(() => {});
+      } else {
+        const newTab = await new Promise(r => chrome.tabs.create({ url: 'https://www.upwork.com/', active: false }, r));
+        proxyTabId = newTab.id;
+        proxyDidOpen = true;
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _debug: true, event: 'lookup_new_tab_opened', proxyTabId, ts: new Date().toISOString() })
+        }).catch(() => {});
+        await new Promise(res => {
+          const onU = (tid, info) => { if (tid === proxyTabId && info.status === 'complete') { chrome.tabs.onUpdated.removeListener(onU); res(); } };
+          chrome.tabs.onUpdated.addListener(onU);
+          setTimeout(res, 15000);
+        });
+        console.log('[upwork-ext] lookup: opened new Upwork tab', proxyTabId);
+      }
+      // Attach CDP to the non-search tab
+      if (!attachedTabs.has(proxyTabId)) {
+        await new Promise((res, rej) =>
+          chrome.debugger.attach({ tabId: proxyTabId }, '1.3', () =>
+            chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res()
+          )
+        );
+        attachedTabs.add(proxyTabId);
+        proxyDidAttach = true;
+        try {
+          await chrome.debugger.sendCommand({ tabId: proxyTabId }, 'Runtime.enable', {});
+        } catch (e) {
+          console.warn('[upwork-ext] lookup: Runtime.enable failed for fallback tab:', e.message);
+        }
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _debug: true, event: 'lookup_fallback_tab_cdp_attached', proxyTabId, ts: new Date().toISOString() })
+        }).catch(() => {});
+      }
+    }
+    console.log('[upwork-ext] lookup: using tab', proxyTabId, 'for', ciphers.length, 'jobs');
+
+    // ── Debug: confirm we reached the lookup phase with a working tab ─────────
+    fetch(EXT_CONFIG.WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _debug: true,
+        event: 'lookup_tab_ready',
+        proxyTabId,
+        reusedSearchTab: searchTab ? searchTab.id === proxyTabId : false,
+        cipherCount: ciphers.length,
+        firstCipher: ciphers[0] || null,
+        ts: new Date().toISOString()
+      })
+    }).catch(() => {});
+
+    // Inner fetch helper — runs both GQL queries in parallel inside the tab
+    const fetchJobInTab = async (cipher) => {
+      // openingId = cipher stripped of the ~02 prefix (Upwork's numeric opening ID)
+      const openingId = jobCipherToOpeningId(cipher);
+
+      const authBody = JSON.stringify({
+        query: JOB_AUTH_DETAILS_QUERY,
+        variables: { id: cipher, isFreelancerOrAgency: true, isLoggedIn: true }
+      });
+      const clientBody = JSON.stringify({
+        query: CLIENT_INFO_BY_OPENING_QUERY,
+        variables: { openingId }
+      });
+
+      // Read cookies via CDP (same pattern as replaySearchPage) so we can pick the
+      // right auth token for job-detail GQL queries without relying on
+      // liveGraphqlHeaders.authorization, which is the search-microapp ujsToken
+      // (UniversalSearchNuxt_vt) — too restricted for gql-query-get-auth-job-details.
+      let jobToken = '';
+      let jobXsrf = '';
+      let jobTenant = '';
+      let vtCookieNames = [];
+      try {
+        const cookieResult = await chrome.debugger.sendCommand(
+          { tabId: proxyTabId }, 'Network.getCookies', { urls: ['https://www.upwork.com'] }
+        );
+        const cookies = cookieResult?.cookies || [];
+
+        // XSRF
+        const xsrfCookie = cookies.find(c => c.name === 'XSRF-TOKEN');
+        if (xsrfCookie?.value) jobXsrf = decodeURIComponent(xsrfCookie.value);
+
+        // Tenant
+        const orgCookie = cookies.find(c => c.name === 'current_organization_uid');
+        if (orgCookie?.value) jobTenant = orgCookie.value;
+
+        // Collect all _vt cookie names for debugging
+        vtCookieNames = cookies.filter(c => c.name.endsWith('_vt')).map(c => c.name);
+
+        // Try known job-page microapp tokens first
+        const JOB_VT_NAMES = ['FxJobPosting_vt', 'JobDetailsNuxt_vt', 'jobs_vt', 'job_vt', 'FxJobDetails_vt'];
+        for (const name of JOB_VT_NAMES) {
+          const c = cookies.find(c => c.name === name);
+          if (c?.value) { jobToken = 'bearer ' + c.value; break; }
+        }
+        // Fallback: any _vt except the search microapp token
+        if (!jobToken) {
+          const fallbackVt = cookies.find(c =>
+            c.name !== 'UniversalSearchNuxt_vt' && c.name.endsWith('_vt') && c.value
+          );
+          if (fallbackVt?.value) jobToken = 'bearer ' + fallbackVt.value;
+        }
+      } catch (e) {
+        console.warn('[upwork-ext] fetchJobInTab getCookies failed:', e.message);
+      }
+
+      // Debug: log which cookies/token we found (first time per lookup run)
+      fetch(EXT_CONFIG.WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          _debug: true,
+          event: 'lookup_job_auth',
+          cipher,
+          hasXsrf: !!jobXsrf,
+          hasTenant: !!jobTenant,
+          hasJobToken: !!jobToken,
+          jobTokenPrefix: jobToken ? jobToken.slice(0, 18) + '…' : null,
+          vtCookieNames,
+          ts: new Date().toISOString()
+        })
+      }).catch(() => {});
+
+      // Prefer CDP-read XSRF; fall back to liveGraphqlHeaders.xsrf (captured from search page)
+      const xsrfToUse = jobXsrf || liveGraphqlHeaders?.xsrf || '';
+
+      // _vt microapp tokens (FxJobPosting_vt, JobDetailsNuxt_vt, etc.) are per-user-per-microapp
+      // and are NOT associated with any tenant/organisation. Sending X-Upwork-API-TenantId
+      // alongside them causes a 403 "tenant not found in users tenants". Only send the tenant
+      // header when we have no explicit token and rely on cookie-based auth, where the server
+      // determines org context from the session cookies directly.
+      const sendTenantHeader = !jobToken && !!jobTenant;
+
+      const expr = `(async () => {
+  try {
+    var hdrs = { 'Content-Type': 'application/json', 'X-Upwork-Accept-Language': 'en-US' };
+    if (${JSON.stringify(xsrfToUse)}) hdrs['X-XSRF-TOKEN'] = ${JSON.stringify(xsrfToUse)};
+    if (${JSON.stringify(jobToken)}) hdrs['Authorization'] = ${JSON.stringify(jobToken)};
+    if (${JSON.stringify(sendTenantHeader)}) hdrs['X-Upwork-API-TenantId'] = ${JSON.stringify(jobTenant)};
+    var [r1, r2] = await Promise.all([
+      fetch('https://www.upwork.com/api/graphql/v1?alias=gql-query-get-auth-job-details', {
+        method: 'POST', credentials: 'include', headers: hdrs, body: ${JSON.stringify(authBody)}
+      }),
+      fetch('https://www.upwork.com/api/graphql/v1?alias=gql-query-clientinfobyopening', {
+        method: 'POST', credentials: 'include', headers: hdrs, body: ${JSON.stringify(clientBody)}
+      })
+    ]);
+    var [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+    var d3 = null; var status3 = null;
+    var _companyId = (d1 && d1.data && d1.data.jobAuthDetails && d1.data.jobAuthDetails.buyer && d1.data.jobAuthDetails.buyer.info && d1.data.jobAuthDetails.buyer.info.company && d1.data.jobAuthDetails.buyer.info.company.companyId) || null;
+    if (_companyId) {
+      var hdrs3 = Object.assign({}, hdrs);
+      if (${JSON.stringify(jobTenant)}) hdrs3['X-Upwork-API-TenantId'] = ${JSON.stringify(jobTenant)};
+      var r3 = await fetch('https://www.upwork.com/api/graphql/v1?alias=gql-query-clientcompanymetadata', {
+        method: 'POST', credentials: 'include', headers: hdrs3,
+        body: JSON.stringify({ query: 'query($uid: ID!) { clientCompanyMetadata(id: $uid) { rid uid name } }', variables: { uid: _companyId } })
+      });
+      try { d3 = await r3.json(); } catch(_) { d3 = null; }
+      status3 = r3.status;
+    }
+    return JSON.stringify({ status1: r1.status, status2: r2.status, status3: status3, data1: d1, data2: d2, data3: d3 });
+  } catch(e) { return JSON.stringify({ error: e.message }); }
+})()`;
+      const evalRes = await chrome.debugger.sendCommand(
+        { tabId: proxyTabId }, 'Runtime.evaluate',
+        { expression: expr, awaitPromise: true, returnByValue: true, timeout: 20000 }
+      );
+      const out = evalRes?.result?.value ? JSON.parse(evalRes.result.value) : null;
+      return {
+        raw: out,
+        data: out?.data1?.data?.jobAuthDetails || null,
+        clientInfo: out?.data2?.data?.clientInfoByOpening || null,
+        companyMetadata: out?.data3?.data?.clientCompanyMetadata || null
+      };
+    };
+
+    // Per-company agency profile cache — avoids opening new tabs multiple times
+    // for the same company when multiple jobs come from the same client.
+    const agencyProfileCache = new Map(); // companyId -> profiles[]
+
+    for (let i = 0; i < ciphers.length; i++) {
+      const cipher = ciphers[i];
+      console.log(`[upwork-ext] runSearchLookup: processing ${i + 1}/${ciphers.length} — ${cipher}`);
+      try {
+        const fetchResult = await Promise.race([
+          fetchJobInTab(cipher),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 20s')), 20000))
+        ]).catch(e => { console.warn('[upwork-ext] fetchJobInTab race:', e.message); return null; });
+
+        // Debug webhook for EVERY cipher
+        {
+          const raw = fetchResult?.raw ?? null;
+          const d1Keys = raw?.data1 ? Object.keys(raw.data1) : null;
+          const d2Keys = raw?.data2 ? Object.keys(raw.data2) : null;
+          // Include raw response previews when data is missing so we can debug the structure
+          const preview1 = (!fetchResult?.data && raw?.data1)
+            ? JSON.stringify(raw.data1).slice(0, 800) : null;
+          const preview2 = (!fetchResult?.clientInfo && raw?.data2)
+            ? JSON.stringify(raw.data2).slice(0, 800) : null;
+          fetch(EXT_CONFIG.WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              _debug: true,
+              event: 'lookup_fetch_result',
+              cipher,
+              index: i,
+              gotResult: !!fetchResult,
+              httpStatus1: raw?.status1 ?? null,
+              httpStatus2: raw?.status2 ?? null,
+              hasAuthData: !!fetchResult?.data,
+              hasClientInfo: !!fetchResult?.clientInfo,
+              rawError: raw?.error ?? null,
+              data1Keys: d1Keys,
+              data2Keys: d2Keys,
+              data1Preview: preview1,
+              data2Preview: preview2,
+              ts: new Date().toISOString()
+            })
+          }).catch(() => {});
+        }
+
+        const jobDetails = fetchResult?.data ?? null;
+        const clientInfo = fetchResult?.clientInfo ?? null;
+
+        if (!jobDetails) {
+          console.warn('[upwork-ext] search: no data for cipher', cipher,
+            'status1:', fetchResult?.raw?.status1, 'status2:', fetchResult?.raw?.status2, 'error:', fetchResult?.raw?.error);
+        } else {
+          const opening   = jobDetails.opening  || {};
+          const buyer     = jobDetails.buyer    || {};
+          const jobInfo   = opening.job?.info   || {};
+          const buyerInfo = buyer.info          || {};
+          const company   = buyerInfo.company   || {};
+          const stats     = buyerInfo.stats     || {};
+          const location  = buyerInfo.location  || {};
+
+          // clientInfoByOpening supplements — richer data for active jobs
+          const ciBuyer    = clientInfo?.buyer    || {};
+          const ciActivity = clientInfo?.activity || {};
+          const ciBuyerInfo = ciBuyer.info       || {};
+          const ciCompany  = ciBuyerInfo.company  || {};
+          const ciStats    = ciBuyerInfo.stats    || {};
+          const ciLocation = ciBuyerInfo.location || {};
+
+          const webhookPayload = {
+            source: 'search',
+            query: searchQuery,
+            jobCiphertext: cipher,
+            jobTitle:        jobInfo.title   || opening.job?.title || 'Unknown',
+            jobType:         jobInfo.type    || null,
+            jobCategory:     opening.job?.category?.name || null,
+            description:     opening.description || null,
+            budget:          opening.budget  || null,
+            hourlyBudget:    opening.extendedBudgetInfo || null,
+            postedOn:        opening.postedOn || null,
+            skills:          (opening.segmentationData || []).filter(s => s.type === 'SKILL').map(s => s.label || s.value),
+            companyId:       ciCompany.id    || company.companyId   || null,
+            companyName:     ciCompany.name  || company.name        || null,
+            industry:        ciCompany.profile?.industry || company.profile?.industry || null,
+            companySize:     ciCompany.profile?.size     || company.profile?.size     || null,
+            companyContractDate: ciCompany.contractDate  || company.contractDate      || null,
+            companyL3Occupations: ciCompany.profile?.l3Occupations || null,
+            clientCountry:   ciLocation.country  || location.country    || null,
+            clientCity:      ciLocation.city     || location.city       || null,
+            clientState:     ciLocation.state    || null,
+            clientWorldRegion: ciLocation.worldRegion || null,
+            clientScore:     ciStats.score       || stats.score         || null,
+            totalJobsPosted: ciStats.totalAssignments || stats.totalAssignments || null,
+            totalHired:      ciStats.totalJobsWithHires  || stats.totalJobsWithHires  || null,
+            totalSpent:      ciStats.totalCharges?.amount || stats.totalCharges?.amount || null,
+            totalHoursWorked: ciStats.hoursCount || stats.hoursCount || null,
+            feedbackCount:   ciStats.feedbackCount || stats.feedbackCount || null,
+            activeContracts: ciStats.activeAssignmentsCount || stats.activeAssignmentsCount || null,
+            avgHourlyRate:   ciBuyerInfo.avgHourlyJobsRate?.amount || buyerInfo.avgHourlyJobsRate?.amount || null,
+            clientLogo:      ciBuyerInfo.logo || null,
+            cssTier:         ciBuyer.cssTier || null,
+            paymentVerified: ciBuyer.isPaymentMethodVerified ?? buyer.isPaymentMethodVerified ?? null,
+            enterprise:      ciBuyer.isEnterprise ?? buyer.enterprise ?? null,
+            // Activity from clientInfoByOpening (more detailed than clientActivity)
+            totalApplicants:        ciActivity.totalApplicants ?? opening.clientActivity?.totalApplicants ?? null,
+            totalInvitedToInterview: ciActivity.totalInvitedToInterview ?? opening.clientActivity?.totalInvitedToInterview ?? null,
+            totalHiredForOpening:   ciActivity.totalHired ?? opening.clientActivity?.totalHired ?? null,
+            numberOfPositions:      ciActivity.numberOfPositionsToHire ?? opening.clientActivity?.numberOfPositionsToHire ?? null,
+            lastBuyerActivity:      ciActivity.lastBuyerActivity ?? opening.clientActivity?.lastBuyerActivity ?? null,
+            jobStatus:       clientInfo?.jobInfo?.status || null,
+            hiredApplicants: jobDetails.hiredApplicantNames || [],
+            companyMetadata: fetchResult?.companyMetadata || null,
+            runAt: new Date().toISOString()
+          };
+
+          // ── Agency lookup: client-details + company-details ──────────────────
+          // Same flow as manual company lookup — opens real tab to capture live
+          // auth headers, returns freelancer profiles attached to this company.
+          // Cached per companyId so multiple jobs from the same client only pay once.
+          const companyIdForAgency = ciCompany.id || company.companyId || null;
+          if (companyIdForAgency) {
+            let profiles;
+            if (agencyProfileCache.has(companyIdForAgency)) {
+              profiles = agencyProfileCache.get(companyIdForAgency);
+              console.log(`[upwork-ext] agency profile cache hit for ${companyIdForAgency}`);
+            } else {
+              try {
+                console.log(`[upwork-ext] running agency lookup for company ${companyIdForAgency}`);
+                const rawCp = await runAgencyLookupInNewTab(companyIdForAgency);
+                // runAgencyLookupInNewTab returns flat {ciphertext, name} objects.
+                // .identity/.profile nesting only exists in the raw GET_DETAILS_QUERY response,
+                // not in the already-mapped profile objects returned by that function.
+                profiles = (rawCp.profiles || []).map(p => ({
+                  ciphertext: p.ciphertext || p.identity?.ciphertext || null,
+                  name:       p.name       || p.profile?.name        || null,
+                  status:     200,
+                  agencies:   p.agencies              || []
+                }));
+                agencyProfileCache.set(companyIdForAgency, profiles);
+              } catch(agErr) {
+                console.warn(`[upwork-ext] agency lookup failed for ${companyIdForAgency}:`, agErr.message);
+                profiles = [];
+              }
+            }
+            webhookPayload['client-details']  = profiles;
+            webhookPayload['company-details'] = profiles;
+          }
+
+          chrome.storage.local.get(['lastSearchJobs'], (stored) => {
+            const arr = stored.lastSearchJobs || [];
+            const idx = arr.findIndex(j => j.jobCiphertext === cipher);
+            if (idx >= 0) arr[idx] = webhookPayload; else arr.unshift(webhookPayload);
+            chrome.storage.local.set({ lastSearchJobs: arr.slice(0, 200) });
+          });
+
+          fetch(EXT_CONFIG.WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(webhookPayload)
+          }).catch(e => console.warn('[upwork-ext] search webhook error:', e.message));
+
+          console.log(`[upwork-ext] runSearchLookup: sent job ${i + 1}/${ciphers.length} — ${jobInfo.title || cipher}`);
+          if (i < ciphers.length - 1) {
+            // Wait 3–4 minutes between each lookup to avoid rate-limiting
+            const delayMs = 180000 + Math.floor(Math.random() * 60000);
+            console.log(`[upwork-ext] lookup: waiting ${Math.round(delayMs/1000)}s before next job...`);
+            await new Promise(r => setTimeout(r, delayMs));
+          }
+        }
+      } catch(e) {
+        console.warn(`[upwork-ext] runSearchLookup error for ${cipher}:`, e.message);
+        fetch(EXT_CONFIG.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _debug: true, event: 'lookup_cipher_exception', cipher, index: i, error: e.message, ts: new Date().toISOString() })
+        }).catch(() => {});
+      }
+      setSearchProgress({ active: true, query: searchQuery, phase: 'lookup', found: ciphers.length, processed: i + 1, total: ciphers.length });
+    }
+
+  } catch(outerErr) {
+    fetch(EXT_CONFIG.WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _debug: true, event: 'lookup_outer_error', error: outerErr.message, proxyTabId, ts: new Date().toISOString() })
+    }).catch(() => {});
+    console.warn('[upwork-ext] runSearchLookup outer error:', outerErr.message);
+  } finally {
+    // Always close the tab we used for lookups
+    fetch(EXT_CONFIG.WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _debug: true, event: 'lookup_finally_cleanup', proxyTabId, ts: new Date().toISOString() })
+    }).catch(() => {});
+    if (proxyTabId) {
+      try { chrome.debugger.detach({ tabId: proxyTabId }, () => {}); } catch(_) {}
+      chrome.tabs.remove(proxyTabId, () => {});
+      attachedTabs.delete(proxyTabId);
+    }
+  }
+
+  console.log('[upwork-ext] runSearchLookup: all done');
+  fetch(EXT_CONFIG.WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ _debug: true, event: 'lookup_all_done', total: ciphers.length, ts: new Date().toISOString() })
+  }).catch(() => {});
+  setSearchProgress({ active: false, query: searchQuery, phase: 'done', found: ciphers.length, processed: ciphers.length, total: ciphers.length });
+
+  } finally {
+    clearInterval(_swKeepAlive);
+  }
 }
 
 // ─── Message API (used by popup) ──────────────────────────────────────────────
@@ -533,27 +2481,93 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
       try {
-        // Read company name cached from Vue $store at detection time
-        const prefill = await new Promise(resolve => {
-          chrome.storage.local.get(['detectedCompanies'], (stored) => {
-            const dc = (stored.detectedCompanies || []).find(c => c.companyId === companyId);
-            resolve(dc ? { companyName: dc.companyName || null, location: dc.location || null, jobTitle: dc.jobTitle || null, source: 'cached-detection' } : null);
-          });
-        });
-        let results = await runQueriesInTab(upworkTab.id, companyId, jobCiphertext, prefill);
+        // Replay stored request templates for this job
+        let results = await replayTemplatesForJob(upworkTab.id, jobCiphertext);
+        if (results.length === 0) {
+          // Fallback: try passively captured GQL responses from the tab
+          const tabGql = _capturedGqlByTab.get(upworkTab.id) || [];
+          results = buildResultsFromGqlResponses(tabGql.filter(r => extractJobCiphertext(r.requestBody) === jobCiphertext));
+        }
+        if (results.length === 0) {
+          // Fallback 2: try runQueriesInTab
+          try {
+            const raw = await runQueriesInTab(upworkTab.id, companyId, jobCiphertext, null);
+            if (Array.isArray(raw)) results = raw;
+          } catch(e) {
+            console.warn('[upwork-ext] runCompanyLookup runQueriesInTab failed:', e.message);
+          }
+        }
+        if (results.length === 0) {
+          sendResponse({ success: false, error: 'No request templates captured yet. Browse a job on Upwork first so the extension can learn the request patterns.' });
+          return;
+        }
 
-        // ── Run fetchjobdetailsandcontext + agency lookup in PARALLEL ──────────
+        // ── clientInfoByOpening (companyBuyer) ───────────────────────────────
+        // Fired directly — not captured as a template, so must be fetched explicitly.
+        if (jobCiphertext) {
+          try {
+            const _openingId = jobCipherToOpeningId(jobCiphertext);
+            const _st = await new Promise(r => chrome.storage.local.get(['sessionTokens'], d => r(d.sessionTokens || {})));
+            const _tok  = _st['oauth2_global_js_token'] || _st['JobDetailsNuxt_vt'] || _st['_bearer'] || '';
+            const _tid  = _st['current_organization_uid'] || _st['_tenantId'] || '';
+            const _xsrf = _st['XSRF-TOKEN'] || '';
+            const _ciQuery = `query clientInfoByOpening($openingId: ID!) { clientInfoByOpening(openingId: $openingId) { buyer { info { company { contractDate profile { industry size visible l3Occupations } id: companyId } location { country city state countryTimezone worldRegion offsetFromUtcMillis } jobs { postedCount filledCount openCount } stats { feedbackCount hoursCount totalCharges { amount currencyCode } totalAssignments activeAssignmentsCount score totalJobsWithHires } logo avgHourlyJobsRate { amount currencyCode } } cssTier isPaymentMethodVerified isEnterprise: enterprise } activity { lastBuyerActivity numberOfPositionsToHire totalApplicants totalInvitedToInterview totalHired unansweredInvites invitationsSent } jobInfo { status } } }`;
+            const _ciExpr = `(async () => {
+              try {
+                const h = { 'Content-Type': 'application/json', 'X-Upwork-Accept-Language': 'en-US' };
+                if (${JSON.stringify(_tok)}) h['Authorization'] = 'Bearer ' + ${JSON.stringify(_tok)};
+                if (${JSON.stringify(_tid)}) h['X-Upwork-API-TenantId'] = ${JSON.stringify(_tid)};
+                if (${JSON.stringify(_xsrf)}) h['X-XSRF-TOKEN'] = ${JSON.stringify(_xsrf)};
+                const r = await fetch('https://www.upwork.com/api/graphql/v1?alias=companyBuyer', {
+                  method: 'POST', credentials: 'include', headers: h,
+                  body: JSON.stringify({ query: ${JSON.stringify(_ciQuery)}, variables: { openingId: ${JSON.stringify(_openingId)} } })
+                });
+                let d; try { d = await r.json(); } catch(_) { d = null; }
+                return JSON.stringify({ status: r.status, data: d });
+              } catch(e) { return JSON.stringify({ error: e.message }); }
+            })()`;
+            const _ciEval = await chrome.debugger.sendCommand(
+              { tabId: upworkTab.id }, 'Runtime.evaluate',
+              { expression: _ciExpr, awaitPromise: true, returnByValue: true }
+            );
+            if (!_ciEval.exceptionDetails) {
+              const _ciOut = _ciEval.result?.value ? JSON.parse(_ciEval.result.value) : null;
+              if (_ciOut) {
+                results = results.filter(r => r.alias !== 'companyBuyer');
+                // Always push so diagnostic info reaches the webhook
+                results.push({ alias: 'companyBuyer', status: _ciOut.status || 0, data: _ciOut.data || null, _debug: _ciOut.error || (_ciOut.status >= 400 ? 'http_' + _ciOut.status : undefined) });
+              } else {
+                results.push({ alias: 'companyBuyer', status: 0, data: null, _debug: 'eval_null: ' + JSON.stringify(_ciEval.result) });
+              }
+            } else {
+              results.push({ alias: 'companyBuyer', status: 0, data: null, _debug: 'exception: ' + JSON.stringify(_ciEval.exceptionDetails) });
+            }
+          } catch(_ciErr) {
+            results.push({ alias: 'companyBuyer', status: 0, data: null, _debug: 'catch: ' + _ciErr.message });
+            console.warn('[upwork-ext] companyBuyer fetch failed:', _ciErr.message);
+          }
+        }
+
+        // ── clientCompanyMetadata — opens messages/rooms tab to capture live headers ──
+        const _metaCompanyId = companyId || null;
+        if (_metaCompanyId) {
+          try {
+            const _metaResult = await runClientCompanyMetadataInNewTab(_metaCompanyId);
+            results = results.filter(r => r.alias !== 'clientCompanyMetadata');
+            results.push(_metaResult);
+          } catch(_mErr) {
+            console.warn('[upwork-ext] clientCompanyMetadata lookup failed:', _mErr.message);
+            results.push({ alias: 'clientCompanyMetadata', status: 0, data: null, _debug: 'catch: ' + _mErr.message });
+          }
+        }
+
+        // ── Agency lookup — opens real tabs to capture live headers ─────────
         const jaBuyerR = results.find(r => r.alias === 'jobAuth-buyer');
         const agencyCId = jaBuyerR?.data?.data?.jobAuthDetails?.buyer?.info?.company?.companyId || companyId;
 
-        const [jcResult, rawCp] = await Promise.all([
-          jobCiphertext
-            ? runJobContextLookup(jobCiphertext)
-            : Promise.resolve({ alias: 'fetchjobdetailsandcontext', skipped: true, reason: 'no jobCiphertext' }),
-          agencyCId
-            ? runAgencyLookupInTab(upworkTab.id, agencyCId)
-            : Promise.resolve({ alias: 'company-page', skipped: true, reason: 'no companyId' })
-        ]);
+        const rawCp = agencyCId
+          ? await runAgencyLookupInNewTab(agencyCId)
+          : { alias: 'company-page', skipped: true, reason: 'no companyId' };
 
         // Split agency profiles into separate result entries
         const { profiles: cpProfiles, ...cpResult } = rawCp;
@@ -561,26 +2575,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const compDetResult = { alias: 'company-details',  companyId: rawCp.companyId, profiles: cpProfiles || [] };
 
         results = results.filter(r =>
-          r.alias !== 'fetchjobdetailsandcontext' &&
           r.alias !== 'company-page' &&
           r.alias !== 'client-details' &&
           r.alias !== 'company-details'
         );
-        results = [...results, jcResult, cpResult, cdResult, compDetResult];
+        results = [...results, cpResult, cdResult, compDetResult];
 
+        const entry = { companyId, jobCiphertext: jobCiphertext || null, jobTitle: jobTitle || 'Unknown', runAt: new Date().toISOString(), results };
         chrome.storage.local.get(['companyLookups'], (stored) => {
           const lookups = stored.companyLookups || [];
           const idx = lookups.findIndex(l => l.companyId === companyId);
-          const entry = { companyId, jobCiphertext: jobCiphertext || null, jobTitle: jobTitle || 'Unknown', runAt: new Date().toISOString(), results };
           if (idx >= 0) lookups[idx] = entry; else lookups.push(entry);
           chrome.storage.local.set({ companyLookups: lookups }, () => {
-            // Forward full combined JSON to configured webhook + hardcoded test endpoint
             const payload = JSON.stringify(cleanForWebhook({ companyId, jobCiphertext: jobCiphertext || null, jobTitle: jobTitle || 'Unknown', runAt: entry.runAt, results }));
-            const targets = [EXT_CONFIG.WEBHOOK_URL];
-            for (const url of targets) {
-              fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload })
-                .catch(e => console.warn('[upwork-ext] lookup webhook error:', url, e.message));
-            }
+            fetch(EXT_CONFIG.WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload })
+              .catch(e => console.warn('[upwork-ext] lookup webhook error:', e.message));
             sendResponse({ success: true, results });
           });
         });
@@ -1334,6 +3343,158 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // ── Lookup a specific job by URL ──────────────────────────────────────────
+  // Opens the job page in a bg tab with CDP attached BEFORE navigation so we
+  // catch every network request the page makes. We watch ALL graphql endpoints
+  // (not just a specific alias) and grab the first response whose body contains
+  // jobAuthDetails. This handles both aliased requests AND persisted-query URLs.
+  if (message.action === 'lookupJobUrl') {
+    const { url } = message;
+    const cipher = url.match(/\/jobs\/(?:details\/)?(~0[^/?#\s]+)/)?.[1]
+                || url.match(/(~0[0-9a-zA-Z]{8,35})/)?.[1];
+    if (!cipher) {
+      sendResponse({ success: false, error: 'No job cipher found in URL' });
+      return true;
+    }
+    sendResponse({ success: true, started: true, cipher });
+
+    const debugWH = (step, data) => {
+      const payload = JSON.stringify({ _debug: true, step, cipher, ts: new Date().toISOString(), ...data });
+      fetch(EXT_CONFIG.WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).catch(() => {});
+    };
+
+    (async () => {
+      try {
+        const jobUrl = `https://www.upwork.com/jobs/${cipher}`;
+        debugWH('1-opening-tab', { jobUrl });
+
+        await new Promise((resolve) => {
+          let bgTab = null;
+          let detached = false;
+          let found = false;
+          const pendingGqlIds = new Set(); // requestIds of graphql requests
+          const pendingHdrs = {};
+
+          const cleanup = () => {
+            clearTimeout(timer);
+            chrome.debugger.onEvent.removeListener(listener);
+            if (!detached && bgTab) {
+              detached = true;
+              attachedTabs.delete(bgTab.id);
+              chrome.debugger.detach({ tabId: bgTab.id }, () =>
+                chrome.tabs.remove(bgTab.id, () => {})
+              );
+            }
+            resolve();
+          };
+
+          const timer = setTimeout(() => {
+            debugWH('ERROR', { error: 'job lookup timeout (40s)' });
+            cleanup();
+          }, 40000);
+
+          const listener = async (source, method, params) => {
+            if (!bgTab || source.tabId !== bgTab.id) return;
+
+            // Accumulate extra headers (cookies, auth) per requestId
+            if (method === 'Network.requestWillBeSentExtraInfo') {
+              pendingHdrs[params.requestId] = Object.assign(
+                pendingHdrs[params.requestId] || {}, params.headers || {}
+              );
+            }
+
+            // Track every graphql request — any alias, any URL pattern
+            if (method === 'Network.requestWillBeSent') {
+              const reqUrl = params.request?.url || '';
+              if (reqUrl.includes('upwork.com/api/graphql')) {
+                pendingGqlIds.add(params.requestId);
+                const alias = (reqUrl.match(/alias=([^&]+)/) || [])[1] || 'none';
+                debugWH('gql-seen', { alias, rid: params.requestId.substring(0, 8) });
+              }
+            }
+
+            // Body is fully buffered after loadingFinished — safe to call getResponseBody
+            if (method === 'Network.loadingFinished' &&
+                pendingGqlIds.has(params.requestId) && !found) {
+              pendingGqlIds.delete(params.requestId);
+              const rid = params.requestId;
+              try {
+                const body = await chrome.debugger.sendCommand(
+                  { tabId: bgTab.id }, 'Network.getResponseBody', { requestId: rid }
+                );
+                const parsed = body?.body ? JSON.parse(body.body) : null;
+                if (parsed?.data?.jobAuthDetails) {
+                  if (found) return; // another request already succeeded
+                  found = true;
+                  debugWH('3-found', { rid: rid.substring(0, 8) });
+                  const results = [
+                    { alias: 'jobAuth-buyer', status: 200, data: parsed, source: 'cdp-capture' },
+                    { alias: 'jobAuth-full',  status: 200, data: parsed, source: 'cdp-capture' }
+                  ];
+                  const entry = await buildJobEntry(bgTab.id, cipher, results);
+                  debugWH('4-entry-built', { companyId: entry.companyId, jobTitle: entry.jobTitle });
+                  saveJobEntry(entry);
+                  debugWH('5-saved', { jobTitle: entry.jobTitle, companyId: entry.companyId });
+                  cleanup();
+                }
+              } catch(_) {
+                // Body not available or parse error — not the response we want
+              }
+            }
+          };
+
+          // Create as about:blank, attach debugger + Network.enable BEFORE navigating
+          // so we don't miss any requests fired right after page load begins.
+          chrome.tabs.create({ url: 'about:blank', active: false }, async (tab) => {
+            bgTab = tab;
+            debugWH('2-tab-created', { tabId: tab.id });
+            try {
+              await new Promise((res, rej) =>
+                chrome.debugger.attach({ tabId: tab.id }, '1.3', () =>
+                  chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res()
+                )
+              );
+              attachedTabs.add(tab.id);
+              await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.enable', {});
+              chrome.debugger.onEvent.addListener(listener);
+              // Navigate now — CDP is fully armed
+              await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.navigate', { url: jobUrl });
+            } catch(e) {
+              debugWH('ERROR', { error: 'setup failed: ' + e.message });
+              cleanup();
+            }
+          });
+        });
+      } catch(e) {
+        debugWH('ERROR', { error: e.message, stack: e.stack });
+      }
+    })();
+    return true;
+  }
+
+  // ── Search Upwork via userJobSearch GQL, then lookup each result ─────────────
+  // Phase 1: opens search page, captures userJobSearch headers via CDP, paginates
+  //          with fetch() replays to collect all ciphertexts.
+  // Phase 2: opens a job tab, navigates to each job page (about:blank → attach →
+  //          navigate), captures jobAuthDetails, builds entry. 2-min gap between jobs.
+  if (message.action === 'searchByQuery') {
+    const { query, maxJobs = 30 } = message;
+    // Build a search URL and delegate to the same code as runSearchLookup,
+    // which is proven to work. searchByQuery just adds progress tracking.
+    const searchUrl = `https://www.upwork.com/nx/search/jobs/?q=${encodeURIComponent(query)}&nbs=1`;
+    sendResponse({ success: true, started: true });
+    chrome.storage.local.set({ lastSearchJobs: [] });
+
+    const setProgress = (data) =>
+      chrome.storage.local.set({ searchProgress: { ...data, ts: Date.now() } });
+
+    setProgress({ active: true, query, phase: 'searching', found: 0, processed: 0, total: maxJobs });
+
+    // Call the runSearchLookup core directly (cannot self-message in a service worker)
+    runSearchLookupCore(searchUrl, maxJobs, setProgress, query);
+    return true;
+  }
+
   // ── Extract all jobs from already-captured request data ───────────────────
   // Mines stored network captures without requiring GQL calls.
   // Useful after browsing a search page — all job data is already in the stored requests.
@@ -1437,265 +3598,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // ── Run full lookup for every job found on a search URL ─────────────────────
   if (message.action === 'runSearchLookup') {
-    const { searchUrl, maxJobs = 30 } = message;
+    const { searchUrl, maxJobs = 30, _fromSearchByQuery = false, _query = '' } = message;
     // Respond immediately so the popup re-enables — scraping happens fully in background
     sendResponse({ success: true, started: true });
     chrome.storage.local.set({ lastSearchJobs: [] }); // fresh slate for this run
-    (async () => {
-      let tab = null;
-      let detached = false;
-      const collectedBodies = [];
-      // requestId → true for GQL requests where we received headers but body may not be ready
-      const pendingGqlIds = new Set();
 
-      const cleanup = () => {
-        if (detached) return;
-        detached = true;
-        chrome.debugger.onEvent.removeListener(searchListener);
-        if (tab) chrome.debugger.detach({ tabId: tab.id }, () => chrome.tabs.remove(tab.id, () => {}));
-      };
-
-      // Collect all GQL response bodies from the search page.
-      // Use loadingFinished (not responseReceived) so body is fully buffered before reading.
-      const searchListener = async (source, method, params) => {
-        if (!tab || source.tabId !== tab.id) return;
-        if (method === 'Network.responseReceived' &&
-            params.response?.url?.includes('/api/graphql/v1')) {
-          pendingGqlIds.add(params.requestId);
-        }
-        if (method === 'Network.loadingFinished' && pendingGqlIds.has(params.requestId)) {
-          pendingGqlIds.delete(params.requestId);
-          try {
-            const body = await chrome.debugger.sendCommand(
-              { tabId: tab.id }, 'Network.getResponseBody', { requestId: params.requestId }
-            );
-            if (body?.body) {
-              // Chrome may base64-encode the body for binary/compressed responses
-              const text = body.base64Encoded
-                ? new TextDecoder().decode(Uint8Array.from(atob(body.body), c => c.charCodeAt(0)))
-                : body.body;
-              collectedBodies.push(text);
-              console.log(`[upwork-ext] search: captured GQL body, len=${text.length}`);
-            }
-          } catch(e) {
-            console.warn('[upwork-ext] search: getResponseBody failed:', e.message);
-          }
-        }
-      };
-
-      try {
-        // Create tab at about:blank and attach CDP first.
-        // Then navigate via Page.navigate (CDP command) — unlike tabs.update, this does NOT
-        // cause Chrome to create a new renderer process, so the debugger session + Network.enable
-        // remain intact across the about:blank → upwork.com navigation.
-        tab = await new Promise(r =>
-          chrome.tabs.create({ url: 'about:blank', active: false }, r)
-        );
-        await new Promise((res, rej) =>
-          chrome.debugger.attach({ tabId: tab.id }, '1.3', () =>
-            chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res()
-          )
-        );
-        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.enable', {
-          maxResourceBufferSize: 10 * 1024 * 1024,
-          maxTotalBufferSize:   50 * 1024 * 1024
-        });
-        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable', {});
-        chrome.debugger.onEvent.addListener(searchListener);
-
-        // Paginate through search results, collecting GQL bodies from all pages.
-        // Upwork shows ~10 jobs per page; use &page=N for pages 2+.
-        const maxPages = Math.min(Math.ceil(maxJobs / 10), 20); // cap at 20 pages safety
-        let prevBodyCount = 0;
-        for (let page = 1; page <= maxPages; page++) {
-          // Build page URL — Upwork pagination uses &page=N
-          let pageUrl = searchUrl;
-          try {
-            const pu = new URL(searchUrl);
-            if (page > 1) pu.searchParams.set('page', String(page));
-            else pu.searchParams.delete('page');
-            pageUrl = pu.toString();
-          } catch(_) {
-            pageUrl = page > 1 ? (searchUrl + (searchUrl.includes('?') ? '&' : '?') + 'page=' + page) : searchUrl;
-          }
-
-          // Register Page.loadEventFired listener BEFORE navigating (max 30s per page)
-          const pageLoad = new Promise(res => {
-            const ll = (src, meth) => {
-              if (src.tabId !== tab.id) return;
-              if (meth === 'Page.loadEventFired') { chrome.debugger.onEvent.removeListener(ll); res(); }
-            };
-            chrome.debugger.onEvent.addListener(ll);
-            setTimeout(() => { chrome.debugger.onEvent.removeListener(ll); res(); }, 30000);
-          });
-
-          // Navigate via CDP — preserves the renderer process and keeps Network.enable active
-          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.navigate', { url: pageUrl });
-          await pageLoad;
-          await new Promise(r => setTimeout(r, 2000));
-
-          const newBodies = collectedBodies.length - prevBodyCount;
-          console.log(`[upwork-ext] search: page ${page}/${maxPages} loaded, +${newBodies} GQL bodies`);
-
-          // If no new GQL bodies arrived on this page, Upwork ran out of results — stop early
-          if (page > 1 && newBodies === 0) {
-            console.log('[upwork-ext] search: no new bodies on page ' + page + ', stopping pagination');
-            break;
-          }
-          prevBodyCount = collectedBodies.length;
-        }
-
-        // Extract unique job ciphertexts from all collected bodies.
-        // Match any JSON string value starting with ~0 followed by digits.
-        // Upwork uses this format for all job ciphertexts regardless of field name.
-        console.log(`[upwork-ext] search: collected ${collectedBodies.length} GQL bodies`);
-        const cipherSet = new Set();
-        for (const bodyStr of collectedBodies) {
-          // Broaden regex: Upwork ciphers can be decimal OR hex (e.g. ~0116c2de27a2bce8e6)
-          for (const m of bodyStr.matchAll(/"(~0[0-9a-zA-Z]{8,35})"/g)) {
-            cipherSet.add(m[1]);
-          }
-        }
-
-
-        // Also extract ciphers directly from the page HTML (__NUXT_DATA__ embedded state).
-        // This is the most reliable method — doesn’t depend on network interception.
-        try {
-          const evalRes = await chrome.debugger.sendCommand(
-            { tabId: tab.id }, 'Runtime.evaluate',
-            {
-              expression: `(function(){
-  try {
-    var re = /"(~0[0-9a-zA-Z]{8,35})"/g, ciphers = [], m;
-    var nd = document.getElementById('__NUXT_DATA__');
-    var src = (nd ? nd.textContent : '') + ' ' + document.body.innerHTML;
-    while ((m = re.exec(src)) !== null) if (!ciphers.includes(m[1])) ciphers.push(m[1]);
-    return JSON.stringify(ciphers);
-  } catch(e) { return '[]'; }
-})()`,
-              returnByValue: true
-            }
-          );
-          if (!evalRes.exceptionDetails && evalRes.result?.value) {
-            const pageCiphers = JSON.parse(evalRes.result.value || '[]');
-            console.log(`[upwork-ext] search: page-eval found ${pageCiphers.length} ciphers`);
-            for (const c of pageCiphers) cipherSet.add(c);
-          }
-        } catch(e) {
-          console.warn('[upwork-ext] search: page eval failed:', e.message);
-        }
-
-        cleanup();
-        // Trim to the requested maxJobs limit
-        const ciphers = [...cipherSet].slice(0, maxJobs);
-        if (!ciphers.length) {
-          sendResponse({ success: false, error: 'No job ciphertexts found. Make sure the search URL returns results.' });
-          return;
-        }
-
-        // Open a fresh Upwork page to use as the GQL query host (has cookies, attached via CDP)
-        let queryTab = null;
-        let queryDetached = false;
-        try {
-          queryTab = await new Promise(r =>
-            chrome.tabs.create({ url: EXT_CONFIG.SEARCH_URL, active: false }, r)
-          );
-          await new Promise((res2, rej2) =>
-            chrome.debugger.attach({ tabId: queryTab.id }, '1.3', () =>
-              chrome.runtime.lastError ? rej2(chrome.runtime.lastError) : res2()
-            )
-          );
-          await chrome.debugger.sendCommand({ tabId: queryTab.id }, 'Network.enable', {});
-          attachedTabs.add(queryTab.id);
-          // Wait for the page to be ready so cookies are available
-          await new Promise(r => setTimeout(r, 6000));
-        } catch(e) {
-          console.warn('[upwork-ext] runSearchLookup: failed to open query tab:', e.message);
-          if (queryTab) chrome.tabs.remove(queryTab.id, () => {});
-          return;
-        }
-        const cleanupQueryTab = () => {
-          if (queryDetached) return;
-          queryDetached = true;
-          attachedTabs.delete(queryTab.id);
-          chrome.debugger.detach({ tabId: queryTab.id }, () => chrome.tabs.remove(queryTab.id, () => {}));
-        };
-
-        for (let i = 0; i < ciphers.length; i++) {
-          const cipher = ciphers[i];
-          console.log(`[upwork-ext] runSearchLookup: processing ${i + 1}/${ciphers.length} — ${cipher}`);
-          try {
-            const prefill = null;
-            let results = await runQueriesInTab(queryTab.id, null, cipher, prefill);
-
-            const jaBuyerR = results.find(r => r.alias === 'jobAuth-buyer');
-            const jaFullR  = results.find(r => r.alias === 'jobAuth-full');
-            const ctxRs    = results.find(r => r.alias === 'fetchjobdetailsandcontext');
-            const agencyCId = jaBuyerR?.data?.data?.jobAuthDetails?.buyer?.info?.company?.companyId || null;
-            const jobTitle = jaFullR?.data?.data?.jobAuthDetails?.opening?.job?.info?.title
-                          || ctxRs?.data?.data?.fetchJobDetailsAndContext?.opening?.info?.title
-                          || ctxRs?.data?.data?.fetchjobdetailsandcontext?.opening?.info?.title
-                          || 'Unknown';
-
-            const [jcResult, rawCp] = await Promise.all([
-              runJobContextLookup(cipher),
-              agencyCId
-                ? runAgencyLookupInTab(queryTab.id, agencyCId)
-                : Promise.resolve({ alias: 'company-page', skipped: true, reason: 'no companyId' })
-            ]);
-
-            const { profiles: cpProfiles, ...cpResult } = rawCp;
-            const cdResult      = { alias: 'client-details',  companyId: agencyCId, profiles: cpProfiles || [] };
-            const compDetResult = { alias: 'company-details', companyId: agencyCId, profiles: cpProfiles || [] };
-
-            results = results.filter(r =>
-              r.alias !== 'fetchjobdetailsandcontext' &&
-              r.alias !== 'company-page' &&
-              r.alias !== 'client-details' &&
-              r.alias !== 'company-details'
-            );
-            results = [...results, jcResult, cpResult, cdResult, compDetResult];
-
-            // Save + webhook
-            const companyId = agencyCId;
-            await new Promise(res => {
-              chrome.storage.local.get(['companyLookups', 'lastSearchJobs'], (stored) => {
-                const lookups   = stored.companyLookups  || [];
-                const searchArr = stored.lastSearchJobs  || [];
-                const idx  = lookups.findIndex(l => l.companyId === companyId && l.jobCiphertext === cipher);
-                const sidx = searchArr.findIndex(l => l.jobCiphertext === cipher);
-                const entry = { companyId, jobCiphertext: cipher, jobTitle, runAt: new Date().toISOString(), results, source: 'search' };
-                if (idx  >= 0) lookups[idx]    = entry; else lookups.push(entry);
-                if (sidx >= 0) searchArr[sidx] = entry; else searchArr.push(entry);
-                chrome.storage.local.set({ companyLookups: lookups, lastSearchJobs: searchArr }, () => {
-                  const payload = JSON.stringify(cleanForWebhook({ companyId, jobCiphertext: cipher, jobTitle, runAt: entry.runAt, results }));
-                  const targets = [EXT_CONFIG.WEBHOOK_URL];
-                  for (const url of targets) {
-                    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload })
-                      .catch(e => console.warn('[upwork-ext] search-lookup webhook error:', e.message));
-                  }
-                  res();
-                });
-              });
-            });
-
-            // Small pause between jobs so we don't hammer the API
-            if (i < ciphers.length - 1) await new Promise(r => setTimeout(r, 2000));
-          } catch(e) {
-            console.warn(`[upwork-ext] runSearchLookup error for ${cipher}:`, e.message);
-          }
-        }
-
-        console.log('[upwork-ext] runSearchLookup: all done');
-        cleanupQueryTab();
-      } catch(e) {
-        cleanup();
-        if (typeof cleanupQueryTab === 'function') cleanupQueryTab();
-        console.warn('[upwork-ext] runSearchLookup fatal error:', e.message);
-      }
-    })();
+    const setSearchProgress = _fromSearchByQuery
+      ? (data) => chrome.storage.local.set({ searchProgress: { ...data, ts: Date.now() } })
+      : () => {};
+    const searchQuery = _query || searchUrl;
+    runSearchLookupCore(searchUrl, maxJobs, setSearchProgress, searchQuery);
     // No return true — sendResponse was already called synchronously above
   }
+
 
   // ── Get stored session tokens (for Config tab diagnostics) ───────────────
   if (message.action === 'getSessionTokens') {
@@ -2149,6 +4064,7 @@ function jcFold(job, data, alias) {
 function cleanForWebhook({ companyId, jobCiphertext, jobTitle, runAt, results }) {
   // Build a keyed object: alias → clean data (no alias field, no noise)
   const data = {};
+  let _clientCompanyMeta = null;
   for (const r of results) {
     const alias = r.alias;
 
@@ -2167,6 +4083,9 @@ function cleanForWebhook({ companyId, jobCiphertext, jobTitle, runAt, results })
     // GQL results: unwrap data.data → data, drop query/tokenUsed/withTenant/alias
     if (r.data?.data) {
       data[alias] = { status: r.status, ...r.data.data };
+      if (alias === 'clientCompanyMetadata' && r.data.data.clientCompanyMetadata) {
+        _clientCompanyMeta = r.data.data.clientCompanyMetadata;
+      }
       continue;
     }
 
@@ -2175,7 +4094,8 @@ function cleanForWebhook({ companyId, jobCiphertext, jobTitle, runAt, results })
     data[alias] = rest;
   }
 
-  return { companyId, jobCiphertext, jobTitle, runAt, data };
+  return { companyId, jobCiphertext, jobTitle, runAt,
+           clientCompanyMetadata: _clientCompanyMeta, data };
 }
 
 
@@ -2361,13 +4281,284 @@ function extractJobCiphertext(body) {
   // Check variables object (standard GraphQL format)
   if (typeof body === 'object' && body.variables) {
     for (const v of Object.values(body.variables)) {
-      if (typeof v === 'string' && /^~0\d{10,}/.test(v)) return v;
+      if (typeof v === 'string' && /^~0[0-9a-zA-Z]{8,}/.test(v)) return v;
     }
   }
   // Fallback: regex in stringified body
   const str = typeof body === 'string' ? body : JSON.stringify(body);
   const m = str.match(/"(~0[0-9a-zA-Z]{10,})"/);
   return m ? m[1] : null;
+}
+
+// ─── Build results from passively captured GQL responses ──────────────────────
+// Maps raw Upwork GQL responses to the internal alias format expected by popup.js
+function buildResultsFromGqlResponses(gqlResponses) {
+  const results = [];
+  const seen = new Set();
+  for (const resp of gqlResponses) {
+    const d = resp.data;
+    if (!d || typeof d !== 'object') continue;
+
+    // Standard GQL response: { data: { operationName: {...} } }
+    const gqlData = d.data || d;  // Some responses may not have the extra wrapper
+
+    // Log all top-level keys for debugging
+    const topKeys = Object.keys(gqlData).filter(k => k !== '__typename');
+    console.log('[upwork-ext] buildResults: GQL response keys:', topKeys.join(', '), '| URL:', (resp.url || '').slice(-80));
+
+    if (gqlData.jobAuthDetails && !seen.has('jobAuth')) {
+      seen.add('jobAuth');
+      const wrapped = d.data ? d : { data: d };
+      results.push({ alias: 'jobAuth-buyer', status: resp.status, data: wrapped, source: 'passive' });
+      results.push({ alias: 'jobAuth-full',  status: resp.status, data: wrapped, source: 'passive' });
+    }
+    if ((gqlData.fetchJobDetailsAndContext || gqlData.fetchjobdetailsandcontext) && !seen.has('ctx')) {
+      seen.add('ctx');
+      const wrapped = d.data ? d : { data: d };
+      results.push({ alias: 'fetchjobdetailsandcontext', status: resp.status, data: wrapped, source: 'passive' });
+    }
+  }
+  return results;
+}
+
+// ─── Replay stored request templates for a job cipher ─────────────────────────
+// Uses the exact headers + query text captured from the user's own browsing,
+// just swaps the cipher variable. This avoids OAuth2 permission errors.
+async function replayTemplatesForJob(tabId, cipher) {
+  const st = await new Promise(r => chrome.storage.local.get(['requestTemplates', 'sessionTokens'], r));
+  const templates = st.requestTemplates || {};
+  const tokens    = st.sessionTokens    || {};
+
+  // Templates we want to replay — map alias → variable key for the cipher
+  const WANTED = {};
+  // Upwork uses 'get-auth-job-details' for jobAuthDetails
+  if (templates['get-auth-job-details'])       WANTED['get-auth-job-details']       = 'id';
+  // Alternative alias name
+  if (templates['jobAuth'])                    WANTED['jobAuth']                    = 'id';
+  // fetchjobdetailsandcontext
+  if (templates['fetchjobdetailsandcontext'])  WANTED['fetchjobdetailsandcontext']  = 'ciphertext';
+  if (templates['fetchJobDetailsAndContext'])   WANTED['fetchJobDetailsAndContext']   = 'ciphertext';
+
+  if (Object.keys(WANTED).length === 0) {
+    console.warn('[upwork-ext] no request templates stored yet — browse a job page first');
+    return [];
+  }
+
+  const results = [];
+  for (const [alias, varKey] of Object.entries(WANTED)) {
+    const tmpl = templates[alias];
+    if (!tmpl?.query) continue;
+
+    // Swap the cipher variable, keep all other variables unchanged
+    const variables = { ...tmpl.variables, [varKey]: cipher };
+
+    // Use stored headers; fall back to sessionTokens if stale
+    const headers = { ...tmpl.headers };
+    if (!headers['Authorization'] || headers['Authorization'] === 'Bearer ') {
+      const tok = tokens.oauth2_global_js_token || tokens.JobDetailsNuxt_vt || tokens._bearer || '';
+      if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    }
+    if (!headers['X-Upwork-API-TenantId']) {
+      const tid = tokens.current_organization_uid || tokens._tenantId || '';
+      if (tid) headers['X-Upwork-API-TenantId'] = tid;
+    }
+    if (!headers['X-XSRF-TOKEN']) {
+      if (tokens['XSRF-TOKEN']) headers['X-XSRF-TOKEN'] = tokens['XSRF-TOKEN'];
+    }
+
+    try {
+      const expr = `(async () => {
+        try {
+          const r = await fetch(${JSON.stringify(tmpl.url)}, {
+            method: 'POST', credentials: 'include',
+            headers: ${JSON.stringify(headers)},
+            body: JSON.stringify({ query: ${JSON.stringify(tmpl.query)}, variables: ${JSON.stringify(variables)} })
+          });
+          let d; try { d = await r.json(); } catch(_) { d = null; }
+          return JSON.stringify({ status: r.status, data: d });
+        } catch(e) { return JSON.stringify({ error: e.message }); }
+      })()`;
+
+      const evalRes = await chrome.debugger.sendCommand(
+        { tabId }, 'Runtime.evaluate',
+        { expression: expr, awaitPromise: true, returnByValue: true }
+      );
+      if (evalRes.exceptionDetails) throw new Error(evalRes.exceptionDetails.text || 'eval error');
+      const out = evalRes.result?.value ? JSON.parse(evalRes.result.value) : null;
+      if (out?.error) throw new Error(out.error);
+
+      // Skip failed responses: HTTP errors (401, 403, etc.) or GQL-level errors
+      if (out?.status >= 400) {
+        console.warn(`[upwork-ext] template replay for ${alias}: HTTP ${out.status}`);
+        continue;
+      }
+      if (!out?.data?.data && out?.data?.errors) {
+        console.warn(`[upwork-ext] template replay for ${alias}: GQL error:`, out.data.errors[0]?.message);
+        continue;
+      }
+      if (!out?.data?.data) {
+        console.warn(`[upwork-ext] template replay for ${alias}: no data in response`);
+        continue;
+      }
+
+      // Map to internal aliases expected by popup.js
+      if (alias === 'get-auth-job-details' || alias === 'jobAuth') {
+        results.push({ alias: 'jobAuth-buyer', status: out.status, data: out.data, source: 'template' });
+        results.push({ alias: 'jobAuth-full',  status: out.status, data: out.data, source: 'template' });
+      } else if (alias.toLowerCase().includes('fetchjobdetails')) {
+        results.push({ alias: 'fetchjobdetailsandcontext', status: out.status, data: out.data, source: 'template' });
+      } else {
+        results.push({ alias, status: out.status, data: out.data, source: 'template' });
+      }
+    } catch(e) {
+      console.warn(`[upwork-ext] template replay failed for ${alias}:`, e.message);
+    }
+  }
+  return results;
+}
+
+// ─── Build a complete job entry from results + agency lookup ──────────────────
+// Flow:
+// 1. Extract job details from results (jobAuth + fetchjobdetailsandcontext)
+// 2. If companyId exists → run getStaff (agencyStaffsAuth)
+// 3. If staff found → save + webhook immediately
+// 4. If any staff are freelancers → run getDetails for them → save + webhook again with profiles
+// 5. If no companyId or no staff → save + webhook with whatever we have
+async function buildJobEntry(tabId, cipher, results) {
+  console.log('[upwork-ext] buildJobEntry called with', results.length, 'results, aliases:', results.map(r => r.alias).join(', '));
+  const jobAuthResp = results.find(r => r.alias === 'jobAuth-buyer' || r.alias === 'jobAuth-full');
+  const ctxResp     = results.find(r => r.alias === 'fetchjobdetailsandcontext');
+  
+  // Debug: log what we found
+  if (jobAuthResp) {
+    const buyerPath = jobAuthResp?.data?.data?.jobAuthDetails?.buyer;
+    console.log('[upwork-ext] buildJobEntry: jobAuthResp found (alias:', jobAuthResp.alias, ')');
+    console.log('[upwork-ext] buildJobEntry: buyer.info.company:', JSON.stringify(buyerPath?.info?.company || 'NOT FOUND'));
+    console.log('[upwork-ext] buildJobEntry: data structure preview:', JSON.stringify(jobAuthResp.data).substring(0, 300));
+  } else {
+    console.warn('[upwork-ext] buildJobEntry: NO jobAuthResp found! Available aliases:', results.map(r => r.alias).join(', '));
+  }
+
+  const agencyCId   = jobAuthResp?.data?.data?.jobAuthDetails?.buyer?.info?.company?.companyId || null;
+  const jobTitle    = jobAuthResp?.data?.data?.jobAuthDetails?.opening?.job?.info?.title
+                   || ctxResp?.data?.data?.fetchJobDetailsAndContext?.opening?.info?.title
+                   || ctxResp?.data?.data?.fetchjobdetailsandcontext?.opening?.info?.title
+                   || 'Unknown';
+
+  console.log('[upwork-ext] buildJobEntry: agencyCId =', agencyCId, ', jobTitle =', jobTitle);
+
+  // ── clientInfoByOpening (companyBuyer) ────────────────────────────────────
+  // Open messages/rooms, intercept first GQL request the page fires to capture
+  // real auth headers, then replay clientInfoByOpening with those exact headers.
+  try {
+    const _openingId = jobCipherToOpeningId(cipher);
+    const _ciQuery = `query clientInfoByOpening($openingId: ID!) { clientInfoByOpening(openingId: $openingId) { buyer { info { company { contractDate name profile { industry size } id: companyId } location { country city state countryTimezone worldRegion offsetFromUtcMillis } jobs { postedCount filledCount openCount } stats { feedbackCount hoursCount totalCharges { amount currencyCode } totalAssignments activeAssignmentsCount score totalJobsWithHires } } isPaymentMethodVerified isEnterprise: enterprise } activity { lastBuyerActivity numberOfPositionsToHire totalApplicants totalInvitedToInterview totalHired unansweredInvites invitationsSent } jobInfo { status } } }`;
+
+    const _ciResult = await new Promise(async (resolve) => {
+      let _pTab = null;
+      let _resolved = false;
+      const _pendingHdrs = {};
+      let _capturedReqId = null;
+      const _done = (val) => {
+        if (_resolved) return; _resolved = true;
+        clearTimeout(_ciTimer);
+        chrome.debugger.onEvent.removeListener(_netHdl);
+        if (_pTab) {
+          chrome.debugger.detach({ tabId: _pTab.id }, () => chrome.tabs.remove(_pTab.id, () => {}));
+          attachedTabs.delete(_pTab.id);
+        }
+        resolve(val);
+      };
+      const _ciTimer = setTimeout(() => _done(null), 30000);
+      const _netHdl = async (src, method, params) => {
+        if (!_pTab || src.tabId !== _pTab.id) return;
+        if (method === 'Network.requestWillBeSentExtraInfo') {
+          _pendingHdrs[params.requestId] = Object.assign(_pendingHdrs[params.requestId] || {}, params.headers || {});
+        }
+        if (method === 'Network.requestWillBeSent' &&
+            params.request?.url?.includes('api/graphql/v1') &&
+            !_capturedReqId) {
+          _capturedReqId = params.requestId;
+          const _h = Object.assign({}, params.request.headers || {}, _pendingHdrs[params.requestId] || {});
+          const _auth   = _h['authorization']         || _h['Authorization']         || '';
+          const _tenant = _h['x-upwork-api-tenantid'] || _h['X-Upwork-API-TenantId'] || '';
+          const _xsrf   = _h['x-xsrf-token']          || _h['X-XSRF-TOKEN']          || '';
+          console.log('[upwork-ext] companyBuyer: captured GQL headers — auth:', !!_auth, 'tenant:', !!_tenant);
+          const _ciExpr = `(async()=>{try{const h={'Content-Type':'application/json','Accept':'application/json','Accept-Language':'en-US,en;q=0.9','Origin':'https://www.upwork.com','Referer':'https://www.upwork.com/ab/messages/rooms/'};if(${JSON.stringify(_auth)})h['Authorization']=${JSON.stringify(_auth)};if(${JSON.stringify(_tenant)})h['X-Upwork-API-TenantId']=${JSON.stringify(_tenant)};if(${JSON.stringify(_xsrf)})h['X-XSRF-TOKEN']=${JSON.stringify(_xsrf)};const r=await fetch('https://www.upwork.com/api/graphql/v1?alias=companyBuyer',{method:'POST',credentials:'include',headers:h,body:JSON.stringify({query:${JSON.stringify(_ciQuery)},variables:{openingId:${JSON.stringify(_openingId)}}})});const d=await r.json().catch(()=>null);return JSON.stringify({status:r.status,data:d});}catch(e){return JSON.stringify({error:e.message});}})()`;
+          try {
+            const _ev = await chrome.debugger.sendCommand(
+              { tabId: _pTab.id }, 'Runtime.evaluate',
+              { expression: _ciExpr, awaitPromise: true, returnByValue: true }
+            );
+            const _out = _ev?.result?.value ? JSON.parse(_ev.result.value) : null;
+            _done(_out);
+          } catch(e) { _done({ error: 'eval: ' + e.message }); }
+        }
+      };
+      try {
+        _pTab = await new Promise(r => chrome.tabs.create({ url: 'about:blank', active: false }, r));
+        attachedTabs.add(_pTab.id);
+        chrome.debugger.onEvent.addListener(_netHdl);
+        await new Promise((res, rej) => chrome.debugger.attach({ tabId: _pTab.id }, '1.3', async () => {
+          if (chrome.runtime.lastError) return rej(chrome.runtime.lastError);
+          try {
+            await chrome.debugger.sendCommand({ tabId: _pTab.id }, 'Network.enable', {});
+            await chrome.debugger.sendCommand({ tabId: _pTab.id }, 'Page.navigate', { url: 'https://www.upwork.com/ab/messages/rooms/' });
+            res();
+          } catch(e) { rej(e); }
+        }));
+      } catch(e) { _done({ error: 'tab: ' + e.message }); }
+    });
+
+    const _out = _ciResult;
+    results.push({ alias: 'companyBuyer', status: _out?.status || 0, data: _out?.data || null, _debug: _out?.error });
+    console.log('[upwork-ext] companyBuyer status:', _out?.status, 'hasData:', !!_out?.data?.data);
+  } catch (_ciErr) {
+    results.push({ alias: 'companyBuyer', status: 0, data: null, _debug: 'catch: ' + _ciErr.message });
+    console.warn('[upwork-ext] companyBuyer fetch failed:', _ciErr.message);
+  }
+
+  if (!agencyCId) {
+    console.warn('[upwork-ext] buildJobEntry: NO companyId → skipping agency lookup');
+    results.push({ alias: 'company-page', skipped: true, reason: 'no companyId' });
+    return { companyId: null, jobCiphertext: cipher, jobTitle, runAt: new Date().toISOString(), results };
+  }
+
+  // clientCompanyMetadata — intercept real GQL headers from messages/rooms
+  try {
+    const _metaResult = await runClientCompanyMetadataInNewTab(agencyCId);
+    results.push(_metaResult);
+  } catch(_mErr) {
+    results.push({ alias: 'clientCompanyMetadata', status: 0, data: null, _debug: 'catch: ' + _mErr.message });
+  }
+
+  // Agency lookup — opens real agency + freelancer tabs to capture live auth headers
+  try {
+    const rawCp = await runAgencyLookupInNewTab(agencyCId);
+    const { profiles: cpProfiles, ...cpResult } = rawCp;
+    results.push(cpResult);
+    results.push({ alias: 'client-details',  companyId: agencyCId, profiles: cpProfiles || [] });
+    results.push({ alias: 'company-details', companyId: agencyCId, profiles: cpProfiles || [] });
+  } catch(e) {
+    results.push({ alias: 'company-page', skipped: true, reason: 'agency lookup failed: ' + e.message });
+  }
+
+  return { companyId: agencyCId, jobCiphertext: cipher, jobTitle, runAt: new Date().toISOString(), results };
+}
+
+// ─── Save a job entry to companyLookups + fire webhook ────────────────────────
+function saveJobEntry(entry) {
+  chrome.storage.local.get(['companyLookups'], (s) => {
+    const lookups = s.companyLookups || [];
+    const idx = lookups.findIndex(l => l.jobCiphertext === entry.jobCiphertext);
+    if (idx >= 0) lookups[idx] = entry; else lookups.unshift(entry);
+    chrome.storage.local.set({ companyLookups: lookups.slice(0, 200) }, () => {
+      const payload = JSON.stringify(cleanForWebhook(entry));
+      fetch(EXT_CONFIG.WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload })
+        .catch(e => console.warn('[upwork-ext] webhook error:', e.message));
+    });
+    console.log('[upwork-ext] job saved:', entry.jobTitle);
+  });
 }
 
 // ─── Company lookup query builder ─────────────────────────────────────────────
@@ -2459,7 +4650,69 @@ function buildLookupQueries(companyId, jobCiphertext) {
     });
   }
 
-  // company-page and fetchjobdetailsandcontext handled separately via CDP tab capture
+  // ── fetchJobDetailsAndContext — job description, budget, skills, proposals ──
+  // Uses globalToken (not job-scoped). Variable is 'ciphertext' (String!), not 'id' (ID!).
+  if (jobCiphertext) {
+    queries.push({
+      alias: 'fetchjobdetailsandcontext',
+      query: `query fetchJobDetailsAndContext($ciphertext: String!) {
+        fetchJobDetailsAndContext(ciphertext: $ciphertext) {
+          companyId enterpriseClient
+          opening {
+            description duration durationLabel startDate postedOn publishTime
+            status visibility workload contractorTier openingId
+            budget { amount currencyCode }
+            extendedBudgetInfo { hourlyBudgetMin hourlyBudgetMax hourlyBudgetType }
+            category { name urlSlug }
+            categoryGroup { name urlSlug }
+            clientActivity { numberOfPositionsToHire totalApplicants }
+            info { ciphertext title type id }
+            segmentationData { customValue label name sortOrder type value }
+            sandsData {
+              occupation { id freeText ontologyId prefLabel }
+              ontologySkills { attributeGroupId attributeId freeText ontologyId prefLabel }
+              occupations { id freeText ontologyId prefLabel }
+            }
+          }
+        }
+      }`,
+      variables: { ciphertext: jobCiphertext },
+      useJobToken: false   // uses globalToken + tenant
+    });
+  }
+
+  // ── clientInfoByOpening — richer buyer stats, activity, job status ──────────
+  // Uses globalToken + tenant. openingId strips the ~0 prefix from the ciphertext.
+  if (jobCiphertext) {
+    const openingId = jobCiphertext.replace(/^~0/, '');
+    queries.push({
+      alias: 'companyBuyer',
+      query: `query clientInfoByOpening($openingId: ID!) {
+        clientInfoByOpening(openingId: $openingId) {
+          buyer {
+            info {
+              company {
+                contractDate
+                name
+                profile { industry size visible l3Occupations }
+                id: companyId
+              }
+              location { country city state countryTimezone worldRegion offsetFromUtcMillis }
+              jobs { postedCount filledCount openCount }
+              stats { feedbackCount hoursCount totalCharges { amount currencyCode } totalAssignments activeAssignmentsCount score totalJobsWithHires }
+              logo
+              avgHourlyJobsRate { amount currencyCode }
+            }
+            cssTier isPaymentMethodVerified isEnterprise: enterprise
+          }
+          activity { lastBuyerActivity numberOfPositionsToHire totalApplicants totalInvitedToInterview totalHired unansweredInvites invitationsSent }
+          jobInfo { status }
+        }
+      }`,
+      variables: { openingId },
+      useJobToken: false
+    });
+  }
 
   // ── org-context is intentionally excluded ────────────────────────────────
   // It only returns the logged-in freelancer's own org data (confirmed), not
@@ -2544,12 +4797,21 @@ async function runJobContextLookup(jobCiphertext) {
 async function runAgencyLookupInTab(tabId, cId) {
   const STAFFS_QUERY = 'query getAgencyStaffsAuth($agencyId: ID!, $agencyTeamId: ID!, $limit: Int, $offset: String) { agencyStaffsAuth(agencyId: $agencyId agencyTeamId: $agencyTeamId limit: $limit offset: $offset) { totalCount staffs { id agencyOwner memberType vetted active canBeViewed personalData { id rid name portrait ciphertext topRatedStatus topRatedPlusStatus jobSuccessScore profileAccess hideJss provider } } } }';
 
+  // Read stored tokens (harvested from CDP request headers — bypasses HttpOnly)
+  const storedData = await new Promise(resolve =>
+    chrome.storage.local.get(['sessionTokens'], resolve)
+  );
+  const tk = storedData.sessionTokens || {};
+  const injAgTok  = tk.ag_vs_ui_gql_token || tk.oauth2_global_js_token || tk._bearer || '';
+  const injTenant = tk.current_organization_uid || tk._tenantId || '';
+  const injXsrf   = tk['XSRF-TOKEN'] || '';
+
   const expr = `(async () => {
   try {
     const gc = n => { const m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; };
-    const agTok  = gc('ag_vs_ui_gql_token') || gc('oauth2_global_js_token') || '';
-    const tenant = gc('current_organization_uid') || '';
-    const xsrf   = gc('XSRF-TOKEN') || '';
+    const agTok  = ${JSON.stringify(injAgTok)} || gc('ag_vs_ui_gql_token') || gc('oauth2_global_js_token') || '';
+    const tenant = ${JSON.stringify(injTenant)} || gc('current_organization_uid') || '';
+    const xsrf   = ${JSON.stringify(injXsrf)} || gc('XSRF-TOKEN') || '';
     const r = await fetch('https://www.upwork.com/api/graphql/v1?alias=gql-query-agencystaffsauth', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json', 'Accept': '*/*',
@@ -2579,10 +4841,12 @@ async function runAgencyLookupInTab(tabId, cId) {
 }
 
 // ─── Agency lookup via real agency page tab ─────────────────────────────────────────────────
-// Phase 1: opens agency page, captures agencystaffsauth headers + staff list.
-// Phase 2: opens freelancers/moezz, captures getDetails headers, fires getDetails
-//          for each staff ciphertext using those headers (moezz URL stays hardcoded).
+// Phase 1: opens agency page (about:blank→attach→navigate to avoid race), captures
+//          agencystaffsauth headers, replays with real companyId.
+// Phase 2: opens freelancers/moezz the same way, captures getDetails headers, fires
+//          getDetails for each staff ciphertext using those exact headers.
 async function runAgencyLookupInNewTab(cId) {
+  console.log('[upwork-ext] runAgencyLookupInNewTab: starting for company', cId);
   return new Promise(async (resolve) => {
     let agencyTab = null, freelancerTab = null;
     let agencyDetached = false, freelancerDetached = false;
@@ -2590,8 +4854,11 @@ async function runAgencyLookupInNewTab(cId) {
     let agencyRequestId = null, freelancerRequestId = null;
     let capturedStaffs = null, capturedAgencyData = null, capturedAgencyStatus = null;
     let phase2Started = false;
+    let resolved = false;
 
     const done = (result) => {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timeout);
       chrome.debugger.onEvent.removeListener(agencyListener);
       chrome.debugger.onEvent.removeListener(freelancerListener);
@@ -2602,14 +4869,24 @@ async function runAgencyLookupInNewTab(cId) {
 
     const timeout = setTimeout(
       () => done({ alias: 'company-page', skipped: true, reason: 'agency lookup timeout' }),
-      40000
+      90000
     );
 
     const GET_DETAILS_QUERY = 'query GetTalentProfile($profileUrl: String, $jobProposalId: ID, $openingId: ID, $viewerMode: Boolean, $freeText: String, $skillIds: [ID!], $occupationIds: [ID!]) { talentVPDAuthProfile(filter: { profileUrl: $profileUrl, jobProposalId: $jobProposalId, openingId: $openingId, viewerMode: $viewerMode, freeText: $freeText, skillIds: $skillIds, occupationIds: $occupationIds, excludePortfolio: true, excludeAgencies: false }) { ...AuthProfileResponseFragment } } fragment BaseProfileResponseFragment on TalentVPDProfileResponse { identity { uid: id id userId ciphertext recno } profile { name title description location { country city state } portrait { portrait } skills { node { id name prettyName } } } stats { totalHours totalFeedback rating hourlyRate { node { currencyCode amount } } memberSince totalEarnings topRatedStatus topRatedPlusStatus } agencies { name logo recentHours score recno scoreRecent totalFeedback totalHours agencyRate { node { currencyCode amount } } nSS100BwScore topRatedStatus topRatedPlusStatus hideEacEarnings ciphertext uid: id id defaultAgency } languages { language { englishName } proficiencyLevel { proficiencyTitle } } } fragment AuthProfileResponseFragment on TalentVPDProfileResponse { ...BaseProfileResponseFragment vettedBadge { vetted } }';
 
+    // Helper: attach CDP to a tab that was created as about:blank, then navigate
+    const attachAndNavigate = (tab, navUrl) => new Promise((res, rej) => {
+      chrome.debugger.attach({ tabId: tab.id }, '1.3', async () => {
+        if (chrome.runtime.lastError) return rej(chrome.runtime.lastError);
+        try {
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.enable', {});
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.navigate', { url: navUrl });
+          res();
+        } catch(e) { rej(e); }
+      });
+    });
+
     // ── PHASE 2 LISTENER: freelancer page (moezz) ──────────────────────────────
-    // The moezz page fires its own alias=getDetails request. Capture those exact
-    // headers via CDP, then replay with each staff's ciphertext as profileUrl.
     const freelancerListener = async (source, method, params) => {
       if (!freelancerTab || source.tabId !== freelancerTab.id) return;
 
@@ -2629,7 +4906,6 @@ async function runAgencyLookupInNewTab(cId) {
           freelancerRequestId && params.requestId === freelancerRequestId) {
         chrome.debugger.onEvent.removeListener(freelancerListener);
 
-        // Use the exact same headers moezz page sent — only swap profileUrl variable
         const h = freelancerPendingHdrs[freelancerRequestId] || {};
 
         const expr = `(async () => {
@@ -2647,6 +4923,11 @@ async function runAgencyLookupInNewTab(cId) {
   for (const st of staffs) {
     const ciphertext = st.personalData ? st.personalData.ciphertext : null;
     const personName = st.personalData ? st.personalData.name : null;
+    const isFreelancer = st.personalData && st.personalData.provider === true;
+    if (!isFreelancer) {
+      profiles.push({ ciphertext, name: personName, isClient: true, memberType: st.memberType || 'CLIENT', personalData: st.personalData, agencies: [] });
+      continue;
+    }
     try {
       const pr = await fetch('https://www.upwork.com/api/graphql/v1?alias=getDetails', {
         method: 'POST', credentials: 'include', headers: commonHdrs,
@@ -2668,6 +4949,7 @@ async function runAgencyLookupInNewTab(cId) {
             { expression: expr, awaitPromise: true, returnByValue: true }
           );
           const profiles = evalRes.result?.value ? JSON.parse(evalRes.result.value) : [];
+          console.log('[upwork-ext] runAgencyLookup phase2: got', profiles.length, 'profiles');
           done({ alias: 'company-page', companyId: cId, status: capturedAgencyStatus, data: capturedAgencyData, profiles });
         } catch(e) {
           done({ alias: 'company-page', error: 'phase2 eval: ' + e.message });
@@ -2721,39 +5003,43 @@ async function runAgencyLookupInNewTab(cId) {
           capturedAgencyStatus = agParsed?.status;
           capturedStaffs       = agParsed?.data?.data?.agencyStaffsAuth?.staffs || [];
 
+          console.log('[upwork-ext] runAgencyLookup phase1: got', capturedStaffs.length, 'staff, HTTP', capturedAgencyStatus);
+
           if (!capturedStaffs.length) {
             done({ alias: 'company-page', companyId: cId, status: capturedAgencyStatus, data: capturedAgencyData, profiles: [] });
             return;
           }
 
-          // Phase 2: open freelancer page — attach CDP in callback, before GQL fires
-          freelancerTab = await new Promise(r =>
-            chrome.tabs.create({ url: 'https://www.upwork.com/freelancers/moezz', active: false }, r)
-          );
-          await new Promise((res, rej) =>
-            chrome.debugger.attach({ tabId: freelancerTab.id }, '1.3', () =>
-              chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res()
-            )
-          );
-          await chrome.debugger.sendCommand({ tabId: freelancerTab.id }, 'Network.enable', {});
+          const freelancerStaffs = capturedStaffs.filter(st => st.personalData?.provider === true);
+          console.log('[upwork-ext] runAgencyLookup: freelancers:', freelancerStaffs.length, 'clients:', capturedStaffs.length - freelancerStaffs.length);
+
+          if (freelancerStaffs.length === 0) {
+            const clientProfiles = capturedStaffs.map(st => ({
+              ciphertext: st.personalData?.ciphertext, name: st.personalData?.name,
+              isClient: true, memberType: st.memberType || 'CLIENT', personalData: st.personalData, agencies: []
+            }));
+            done({ alias: 'company-page', companyId: cId, status: capturedAgencyStatus, data: capturedAgencyData, profiles: clientProfiles });
+            return;
+          }
+
+          // Phase 2: open moezz page — blank first, attach, then navigate
+          console.log('[upwork-ext] runAgencyLookup phase2: opening moezz...');
+          freelancerTab = await new Promise(r => chrome.tabs.create({ url: 'about:blank', active: false }, r));
+          attachedTabs.add(freelancerTab.id);
           chrome.debugger.onEvent.addListener(freelancerListener);
+          await attachAndNavigate(freelancerTab, 'https://www.upwork.com/freelancers/moezz');
         } catch(e) {
           done({ alias: 'company-page', error: 'phase1 eval: ' + e.message });
         }
       }
     };
 
+    // Phase 1: open agency page — blank first, attach, then navigate
     try {
-      agencyTab = await new Promise(r =>
-        chrome.tabs.create({ url: 'https://www.upwork.com/agencies/2012207015295215238/', active: false }, r)
-      );
-      await new Promise((res, rej) =>
-        chrome.debugger.attach({ tabId: agencyTab.id }, '1.3', () =>
-          chrome.runtime.lastError ? rej(chrome.runtime.lastError) : res()
-        )
-      );
-      await chrome.debugger.sendCommand({ tabId: agencyTab.id }, 'Network.enable', {});
+      agencyTab = await new Promise(r => chrome.tabs.create({ url: 'about:blank', active: false }, r));
+      attachedTabs.add(agencyTab.id);
       chrome.debugger.onEvent.addListener(agencyListener);
+      await attachAndNavigate(agencyTab, 'https://www.upwork.com/agencies/2012207015295215238/');
     } catch(e) {
       clearTimeout(timeout);
       resolve({ alias: 'company-page', error: e.message });
@@ -2761,6 +5047,117 @@ async function runAgencyLookupInNewTab(cId) {
   });
 }
 
+
+// ─── clientCompanyMetadata via messages/rooms tab ───────────────────────────
+// Opens https://www.upwork.com/ab/messages/rooms/, waits for any GQL request
+// the page fires (Network.requestWillBeSent), captures the exact auth headers
+// from that live request, then replays clientCompanyMetadata with those headers.
+async function runClientCompanyMetadataInNewTab(companyId) {
+  console.log('[upwork-ext] runClientCompanyMetadataInNewTab: starting for company', companyId);
+
+  return new Promise(async (resolve) => {
+    let msgTab = null;
+    let resolved = false;
+    const pendingHdrs = {};
+    let capturedRequestId = null;
+
+    const done = (result) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      chrome.debugger.onEvent.removeListener(listener);
+      if (msgTab) {
+        chrome.debugger.detach({ tabId: msgTab.id }, () => chrome.tabs.remove(msgTab.id, () => {}));
+        attachedTabs.delete(msgTab.id);
+      }
+      resolve(result);
+    };
+
+    const timeout = setTimeout(
+      () => done({ alias: 'clientCompanyMetadata', status: 0, data: null, _debug: 'timeout' }),
+      30000
+    );
+
+    const listener = async (source, method, params) => {
+      if (!msgTab || source.tabId !== msgTab.id) return;
+
+      // Accumulate extra headers (browser-added, incl. cookies) keyed by requestId
+      if (method === 'Network.requestWillBeSentExtraInfo') {
+        pendingHdrs[params.requestId] = Object.assign(
+          pendingHdrs[params.requestId] || {}, params.headers || {}
+        );
+      }
+
+      // First GQL request the page fires — capture its auth headers
+      if (method === 'Network.requestWillBeSent' &&
+          params.request?.url?.includes('api/graphql/v1') &&
+          !capturedRequestId) {
+        capturedRequestId = params.requestId;
+        const h = Object.assign({}, params.request.headers || {}, pendingHdrs[params.requestId] || {});
+        const authHdr   = h['authorization']          || h['Authorization']         || '';
+        const tenantHdr = h['x-upwork-api-tenantid']  || h['X-Upwork-API-TenantId'] || '';
+        const xsrfHdr   = h['x-xsrf-token']           || h['X-XSRF-TOKEN']          || '';
+        console.log('[upwork-ext] clientCompanyMetadata: captured GQL headers — auth:', !!authHdr, 'tenant:', !!tenantHdr);
+
+        const expr = `(async () => {
+  try {
+    const h = {
+      'Accept': 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': 'application/json',
+      'Origin': 'https://www.upwork.com',
+      'Referer': 'https://www.upwork.com/ab/messages/rooms/'
+    };
+    if (${JSON.stringify(authHdr)})   h['Authorization']         = ${JSON.stringify(authHdr)};
+    if (${JSON.stringify(tenantHdr)}) h['X-Upwork-API-TenantId'] = ${JSON.stringify(tenantHdr)};
+    if (${JSON.stringify(xsrfHdr)})   h['X-XSRF-TOKEN']          = ${JSON.stringify(xsrfHdr)};
+    const r = await fetch('https://www.upwork.com/api/graphql/v1', {
+      method: 'POST', credentials: 'include', headers: h,
+      body: JSON.stringify({
+        query: 'query($uid: ID!) { clientCompanyMetadata(id: $uid) { rid uid name } }',
+        variables: { uid: ${JSON.stringify(companyId)} }
+      })
+    });
+    let d; try { d = await r.json(); } catch(_) { d = null; }
+    return JSON.stringify({ status: r.status, data: d });
+  } catch(e) { return JSON.stringify({ error: e.message }); }
+})()`;
+
+        try {
+          const evalRes = await chrome.debugger.sendCommand(
+            { tabId: msgTab.id }, 'Runtime.evaluate',
+            { expression: expr, awaitPromise: true, returnByValue: true }
+          );
+          const out = evalRes.result?.value ? JSON.parse(evalRes.result.value) : null;
+          console.log('[upwork-ext] clientCompanyMetadata HTTP', out?.status, 'companyId', companyId);
+          done({ alias: 'clientCompanyMetadata', status: out?.status || 0, data: out?.data || null,
+                 _debug: out?.error || (out?.status >= 400 ? 'http_' + out?.status : undefined) });
+        } catch(e) {
+          done({ alias: 'clientCompanyMetadata', status: 0, data: null, _debug: 'eval: ' + e.message });
+        }
+      }
+    };
+
+    try {
+      msgTab = await new Promise(r => chrome.tabs.create({ url: 'about:blank', active: false }, r));
+      attachedTabs.add(msgTab.id);
+      chrome.debugger.onEvent.addListener(listener);
+      await new Promise((res, rej) => {
+        chrome.debugger.attach({ tabId: msgTab.id }, '1.3', async () => {
+          if (chrome.runtime.lastError) return rej(chrome.runtime.lastError);
+          try {
+            await chrome.debugger.sendCommand({ tabId: msgTab.id }, 'Network.enable', {});
+            await chrome.debugger.sendCommand({ tabId: msgTab.id }, 'Page.navigate',
+              { url: 'https://www.upwork.com/ab/messages/rooms/' });
+            res();
+          } catch(e) { rej(e); }
+        });
+      });
+    } catch(e) {
+      done({ alias: 'clientCompanyMetadata', status: 0, data: null, _debug: 'tab: ' + e.message });
+    }
+  });
+}
 
 async function runQueriesInTab(tabId, companyId, jobCiphertext, prefill) {
   const queries = buildLookupQueries(companyId, jobCiphertext);
@@ -2870,20 +5267,20 @@ async function runQueriesInTab(tabId, companyId, jobCiphertext, prefill) {
     } catch(e) { return { error: e.message }; }
   }());
 
-  // Token priority for job-scoped queries vs general queries
-  const jobToken    = getCookie('JobDetailsNuxt_vt')
-                   || getCookie('UniversalSearchNuxt_vt')
-                   || getCookie('oauth2_global_js_token');
-  const globalToken = getCookie('oauth2_global_js_token')
-                   || getCookie('UniversalSearchNuxt_vt');
-  const tenantId    = getCookie('current_organization_uid');
-  const xsrf        = getCookie('XSRF-TOKEN');
+  // Token priority for job-scoped queries vs general queries.
+  // Values injected as literals from background-harvested sessionTokens storage
+  // (bypasses the HttpOnly restriction — document.cookie cannot see these cookies).
+  // gc() is a fallback for non-HttpOnly cookies only.
+  const jobToken    = ${JSON.stringify(storedTokens.JobDetailsNuxt_vt || storedTokens.oauth2_global_js_token || null)} || getCookie('JobDetailsNuxt_vt') || getCookie('oauth2_global_js_token');
+  const globalToken = ${JSON.stringify(storedTokens.oauth2_global_js_token || storedTokens._bearer || null)} || getCookie('oauth2_global_js_token');
+  const tenantId    = ${JSON.stringify(storedTokens.current_organization_uid || storedTokens._tenantId || null)} || getCookie('current_organization_uid');
+  const xsrf        = ${JSON.stringify(storedTokens['XSRF-TOKEN'] || null)} || getCookie('XSRF-TOKEN');
   // Agency auth headers injected as literals from captured CDP requests (bypass HttpOnly)
-  const agencyAuthInjected   = '';
-  const agencyTenantInjected = '';
+  const agencyAuthInjected   = ${JSON.stringify(injectedAgencyAuth)};
+  const agencyTenantInjected = ${JSON.stringify(injectedAgencyTenant)};
 
   if (!jobToken && !globalToken) {
-    return JSON.stringify({ fatalError: 'No auth token cookie found — are you logged in to Upwork?' });
+    return JSON.stringify({ fatalError: 'No auth token — browse any Upwork page first so the extension can capture your session tokens.' });
   }
 
   const queries = ${JSON.stringify(queries)};
@@ -2933,13 +5330,13 @@ async function runQueriesInTab(tabId, companyId, jobCiphertext, prefill) {
 
     // useJobToken=true: try each token, first WITH tenantId then WITHOUT (if tenant error)
     // non-job queries: always include tenantId
+    // Use the already-resolved token variables (which have injected values with cookie fallback)
     const tokensToTry = q.useJobToken
       ? [
-          { name: 'JobDetailsNuxt_vt',      value: getCookie('JobDetailsNuxt_vt') },
-          { name: 'UniversalSearchNuxt_vt', value: getCookie('UniversalSearchNuxt_vt') },
-          { name: 'oauth2_global_js_token', value: getCookie('oauth2_global_js_token') }
+          { name: 'job',    value: jobToken },
+          { name: 'global', value: globalToken }
         ].filter(t => t.value)
-      : [{ name: 'oauth2_global_js_token', value: getCookie('oauth2_global_js_token') || jobToken }];
+      : [{ name: 'global', value: globalToken || jobToken }];
 
     let finalResult = null;
     const tokenAttempts = [];

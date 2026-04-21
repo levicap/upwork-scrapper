@@ -1,0 +1,1851 @@
+{
+  "name": "Upwork Lead Gen — Full Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 1 — EXTRACT ALL RAW SIGNALS FROM PAYLOAD\n// ============================================================\nconst body = $input.first().json.body;\nconst jobAuth = body?.data?.['jobAuth-buyer']?.jobAuthDetails;\nconst companyBuyer = body?.data?.['companyBuyer']?.clientInfoByOpening;\nconst clientDetails = body?.data?.['client-details'] ?? [];\nconst companyDetails = body?.data?.['company-details'] ?? [];\nconst companyPage = body?.data?.['company-page']?.agencyStaffsAuth;\n\n// ── Job info ────────────────────────────────────────────────\nconst job = jobAuth?.opening?.job ?? {};\nconst jobTitle = body?.jobTitle ?? job?.info?.title ?? 'N/A';\nconst jobDescription = job?.description ?? '';\nconst jobType = job?.info?.type ?? 'N/A';\nconst jobStatus = job?.status ?? 'N/A';\nconst jobCiphertext = body?.jobCiphertext ?? job?.info?.ciphertext ?? '';\nconst jobUrl = jobCiphertext ? `https://www.upwork.com/jobs/${jobCiphertext}` : 'N/A';\nconst engagement = job?.engagementDuration?.label ?? 'N/A';\nconst postedOn = job?.postedOn ?? 'N/A';\nconst contractorTier = job?.contractorTier ?? 'N/A';\nconst budget = job?.budget?.amount ?? null;\nconst budgetCurrency = job?.budget?.currencyCode ?? 'USD';\nconst hourlyMin = job?.extendedBudgetInfo?.hourlyBudgetMin ?? null;\nconst hourlyMax = job?.extendedBudgetInfo?.hourlyBudgetMax ?? null;\nconst skills = [\n  ...(job?.sandsData?.ontologySkills ?? []),\n  ...(job?.sandsData?.additionalSkills ?? [])\n].map(s => s.prefLabel).filter(Boolean).join(', ');\n\n// ── Client activity ─────────────────────────────────────────\nconst activity = companyBuyer?.activity ?? jobAuth?.opening?.job?.clientActivity ?? {};\nconst totalApplicants = activity?.totalApplicants ?? 0;\nconst totalHired = activity?.totalHired ?? 0;\nconst totalInvited = activity?.totalInvitedToInterview ?? 0;\nconst lastActivity = activity?.lastBuyerActivity ?? 'N/A';\n\n// ── Buyer stats ─────────────────────────────────────────────\nconst buyer = jobAuth?.buyer ?? {};\nconst buyerInfo = buyer?.info ?? {};\nconst stats = buyerInfo?.stats ?? {};\nconst location = buyerInfo?.location ?? {};\nconst city = location?.city ?? 'N/A';\nconst country = location?.country ?? 'N/A';\nconst state = companyBuyer?.buyer?.info?.location?.state ?? '';\nconst isPaymentVerified = buyer?.isPaymentMethodVerified ?? companyBuyer?.buyer?.isPaymentMethodVerified ?? false;\nconst isEnterprise = buyer?.enterprise ?? companyBuyer?.buyer?.isEnterprise ?? false;\nconst totalSpent = stats?.totalCharges?.amount ?? companyBuyer?.buyer?.info?.stats?.totalCharges?.amount ?? 0;\nconst score = stats?.score ?? companyBuyer?.buyer?.info?.stats?.score ?? 0;\nconst feedbackCount = stats?.feedbackCount ?? 0;\nconst totalAssignments = stats?.totalAssignments ?? 0;\nconst activeAssignments = stats?.activeAssignmentsCount ?? 0;\nconst hoursCount = stats?.hoursCount ?? 0;\nconst totalJobsWithHires = stats?.totalJobsWithHires ?? 0;\nconst postedCount = buyerInfo?.jobs?.postedCount ?? companyBuyer?.buyer?.info?.jobs?.postedCount ?? 0;\nconst filledCount = companyBuyer?.buyer?.info?.jobs?.filledCount ?? 0;\nconst openCount = buyerInfo?.jobs?.openCount ?? 0;\nconst avgHourlyRate = buyerInfo?.avgHourlyJobsRate?.amount ?? 0;\nconst memberSince = buyerInfo?.company?.contractDate ?? companyBuyer?.buyer?.info?.company?.contractDate ?? 'N/A';\n\n// ── Company direct fields ────────────────────────────────────\nconst apiCompanyName = buyerInfo?.company?.name ?? companyBuyer?.buyer?.info?.company?.name ?? null;\nconst companyLogo = buyerInfo?.logo ?? companyBuyer?.buyer?.info?.logo ?? null;\nconst companyIndustry = buyerInfo?.company?.profile?.industry ?? null;\nconst companySize = buyerInfo?.company?.profile?.size ?? null;\n\n// ── Open jobs ────────────────────────────────────────────────\nconst openJobs = (buyerInfo?.jobs?.openJobs ?? []).map(j => j.title).filter(Boolean);\n\n// ── Staff / team members from company-page ───────────────────\nconst staffs = (companyPage?.staffs ?? []).map(s => ({\n  name: s.personalData?.name ?? 'Unknown',\n  ciphertext: s.personalData?.ciphertext ?? '',\n  profileUrl: s.personalData?.ciphertext ? `https://www.upwork.com/freelancers/${s.personalData.ciphertext}` : '',\n  topRated: s.personalData?.topRatedStatus,\n  memberType: s.memberType\n}));\n\n// ── Client details with agencies ─────────────────────────────\nconst clientsWithAgencies = clientDetails\n  .filter(c => c.agencies && c.agencies.length > 0)\n  .flatMap(c => c.agencies.map(a => ({\n    clientName: c.name,\n    agencyName: a.name ?? null,\n    agencyLogo: a.logo ?? null,\n    agencyUrl: a.url ?? null\n  })));\n\n// Agency company name & logo (first found)\nconst agencyCompanyName = clientsWithAgencies[0]?.agencyName ?? null;\nconst agencyCompanyLogo = clientsWithAgencies[0]?.agencyLogo ?? null;\n\n// ── Primary client name (from staffs or client-details) ──────\nconst primaryClientName = staffs[0]?.name ?? clientDetails[0]?.name ?? 'Unknown';\n\n// ── Work history ─────────────────────────────────────────────\nconst workHistory = buyer?.workHistory ?? [];\nconst workHistoryTitles = workHistory\n  .map(w => w.jobInfo?.title)\n  .filter(Boolean);\n\n// Names mentioned in feedback (clients sometimes called by name)\nconst feedbackNames = workHistory\n  .flatMap(w => [w.feedback?.comment, w.feedbackToClient?.comment])\n  .filter(Boolean)\n  .join(' ');\n\n// Extract first-name mentions from feedback (e.g. \"David is great\")\nconst nameMatches = feedbackNames.match(/\\b([A-Z][a-z]+)\\b(?= is| was| has| did| always)/g) ?? [];\nconst extractedNamesFromFeedback = [...new Set(nameMatches)].slice(0, 3);\n\n// ── Company name extraction from description ─────────────────\n// Look for patterns like: \"for XYZ\", \"XYZ (Company)\", \"at XYZ\"\nconst descCompanyMatch = jobDescription.match(\n  /(?:for|at|by|from|with)\\s+([A-Z][A-Za-z0-9&.\\-\\s]{2,40})(?:\\s*\\(|\\s*[\\-–]|\\.|,|$)/\n);\nconst descExtractedCompany = descCompanyMatch?.[1]?.trim() ?? null;\n\n// Also grab anything in parentheses after a company-like word\nconst parenMatch = jobDescription.match(/([A-Z][A-Za-z0-9]+)\\s*\\(([^)]{3,40})\\)/);\nconst parenCompany = parenMatch ? `${parenMatch[1]} (${parenMatch[2]})` : null;\n\n// ── Build final company name with priority chain ─────────────\nconst companyName =\n  apiCompanyName ||\n  agencyCompanyName ||\n  descExtractedCompany ||\n  parenCompany ||\n  null; // AI will fill this if still null\n\n// ── Build AI prompt ──────────────────────────────────────────\nconst aiPrompt = companyName ? null : `\nExtract the company name from this Upwork job data.\n\nJOB TITLE: ${jobTitle}\n\nJOB DESCRIPTION (first 600 chars):\n${jobDescription.slice(0, 600)}\n\nOPEN JOBS:\n${openJobs.slice(0, 4).join('\\n')}\n\nWORK HISTORY TITLES:\n${workHistoryTitles.slice(0, 15).join('\\n')}\n\nNAMES FROM FEEDBACK: ${extractedNamesFromFeedback.join(', ')}\n\nLOCATION: ${city}, ${country}\n\nRespond ONLY with valid JSON, no markdown:\n{\"companyName\": \"...\", \"personName\": \"...\", \"confidence\": \"high|medium|low\"}\n`.trim();\n\nreturn [{\n  json: {\n    // Job\n    jobTitle,\n    jobDescription,\n    jobUrl,\n    jobType,\n    jobStatus,\n    engagement,\n    postedOn,\n    contractorTier,\n    budget,\n    budgetCurrency,\n    hourlyMin,\n    hourlyMax,\n    skills,\n    // Client activity\n    totalApplicants,\n    totalHired,\n    totalInvited,\n    lastActivity,\n    // Buyer\n    city,\n    country,\n    state,\n    isPaymentVerified,\n    isEnterprise,\n    totalSpent,\n    score,\n    feedbackCount,\n    totalAssignments,\n    activeAssignments,\n    hoursCount,\n    totalJobsWithHires,\n    postedCount,\n    filledCount,\n    openCount,\n    avgHourlyRate,\n    memberSince,\n    // Company\n    companyName,\n    companyLogo,\n    companyIndustry,\n    companySize,\n    agencyCompanyName,\n    agencyCompanyLogo,\n    // People\n    primaryClientName,\n    staffs: JSON.stringify(staffs),\n    clientsWithAgencies: JSON.stringify(clientsWithAgencies),\n    extractedNamesFromFeedback: extractedNamesFromFeedback.join(', '),\n    // Work history\n    workHistoryTitles: workHistoryTitles.slice(0, 10).join(' | '),\n    openJobs: openJobs.join(' | '),\n    // AI\n    aiPrompt,\n    needsAI: !companyName\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        784
+      ],
+      "id": "077e8a66-af2d-4de9-9bb7-d3066a41c419",
+      "name": "Extract Signals"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "needs-ai-check",
+              "leftValue": "={{ $json.companyName }}",
+              "rightValue": true,
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        784
+      ],
+      "id": "cd7968a7-3517-48c8-b823-c0f7078f2de6",
+      "name": "Needs AI?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Call Claude API to extract company name\nconst item = $input.first().json;\n\ntry {\n  const response = await fetch('https://api.anthropic.com/v1/messages', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      model: 'claude-sonnet-4-20250514',\n      max_tokens: 150,\n      messages: [{ role: 'user', content: item.aiPrompt }]\n    })\n  });\n\n  const data = await response.json();\n  const raw = data.content?.[0]?.text ?? '{}';\n  const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());\n\n  return [{\n    json: {\n      ...item,\n      companyName: parsed.companyName || item.primaryClientName || 'Unknown',\n      aiPersonName: parsed.personName || null,\n      aiConfidence: parsed.confidence || 'low',\n      source: 'ai'\n    }\n  }];\n} catch (e) {\n  return [{\n    json: {\n      ...item,\n      companyName: item.primaryClientName || 'Unknown',\n      aiConfidence: 'low',\n      source: 'fallback'\n    }\n  }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        144
+      ],
+      "id": "c22c711f-c9a0-4680-8ba6-43e2dae73327",
+      "name": "AI Company Extractor"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Already has company name — just tag source\nconst item = $input.first().json;\nreturn [{\n  json: {\n    ...item,\n    source: item.agencyCompanyName ? 'agency' : 'api'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1664,
+        976
+      ],
+      "id": "c9915181-cd9d-45dd-aff7-9d6c35e50863",
+      "name": "No AI Needed"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        2016,
+        784
+      ],
+      "id": "3a01103b-5e6a-4802-a2c4-678cecd2f8f2",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// STEP 2 — BUILD QUALIFIED LEAD + FORMAT TELEGRAM MESSAGE\n// ============================================================\nconst d = $input.first().json;\n\n// Parse staffs back\nlet staffs = [];\ntry { staffs = JSON.parse(d.staffs || '[]'); } catch(e) {}\n\n// ── Lead scoring ─────────────────────────────────────────────\nlet score = 0;\nlet scoreReasons = [];\n\nif (d.isPaymentVerified) { score += 30; scoreReasons.push('✅ Payment verified'); }\nif (d.totalSpent > 10000) { score += 20; scoreReasons.push(`💰 $${Math.round(d.totalSpent/1000)}K spent`); }\nelse if (d.totalSpent > 1000) { score += 10; scoreReasons.push(`💰 $${Math.round(d.totalSpent)} spent`); }\nif (d.score >= 4.5) { score += 15; scoreReasons.push(`⭐ ${d.score} rating`); }\nif (d.totalJobsWithHires > 5) { score += 10; scoreReasons.push(`🤝 ${d.totalJobsWithHires} jobs with hires`); }\nif (d.totalApplicants < 30) { score += 10; scoreReasons.push(`🎯 Only ${d.totalApplicants} applicants`); }\nif (d.budget > 500 || d.hourlyMax > 50) { score += 15; scoreReasons.push('💵 Good budget'); }\n\nconst leadGrade = score >= 70 ? '🔥 HOT' : score >= 45 ? '🟡 WARM' : '🔵 COLD';\n\n// ── Format budget ────────────────────────────────────────────\nlet budgetStr = 'N/A';\nif (d.hourlyMin && d.hourlyMax) {\n  budgetStr = `$${d.hourlyMin}–$${d.hourlyMax}/hr`;\n} else if (d.budget) {\n  budgetStr = `$${d.budget} ${d.jobType === 'FIXED' ? 'fixed' : ''}`;\n}\n\n// ── Format total spent ───────────────────────────────────────\nconst spentStr = d.totalSpent >= 1000\n  ? `$${(d.totalSpent / 1000).toFixed(1)}K`\n  : `$${d.totalSpent}`;\n\n// ── Staff lines ───────────────────────────────────────────────\nconst staffLines = staffs\n  .map(s => {\n    const badge = s.topRated === 'top_rated' ? ' ⭐' : '';\n    return s.profileUrl\n      ? `  👤 <a href=\"${s.profileUrl}\">${s.name}</a>${badge}`\n      : `  👤 ${s.name}${badge}`;\n  })\n  .join('\\n') || '  No profiles found';\n\n// ── Truncate description ─────────────────────────────────────\nconst desc = (d.jobDescription || '').slice(0, 500).trim() + (d.jobDescription?.length > 500 ? '...' : '');\n\n// ── Company logo line ─────────────────────────────────────────\nconst logoLine = (d.companyLogo || d.agencyCompanyLogo)\n  ? `🖼 <a href=\"${d.companyLogo || d.agencyCompanyLogo}\">Company Logo</a>`\n  : null;\n\n// ── Build Telegram message ────────────────────────────────────\nconst lines = [\n  `${leadGrade} <b>New Upwork Lead</b>`,\n  ``,\n  `📌 <b><a href=\"${d.jobUrl}\">${d.jobTitle}</a></b>`,\n  ``,\n  `📝 ${desc}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `💼 <b>Job Details</b>`,\n  `• <b>Type:</b> ${d.jobType}`,\n  `• <b>Tier:</b> ${d.contractorTier}`,\n  `• <b>Engagement:</b> ${d.engagement}`,\n  `• <b>Budget:</b> ${budgetStr}`,\n  `• <b>Skills:</b> ${d.skills || 'N/A'}`,\n  `• <b>Posted:</b> ${new Date(d.postedOn).toLocaleDateString()}`,\n  `• <b>Applicants:</b> ${d.totalApplicants} | Hired: ${d.totalHired} | Interviews: ${d.totalInvited}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `🏢 <b>Client Info</b>`,\n  `• <b>Company:</b> ${d.companyName || 'Unknown'} <i>(${d.source})</i>`,\n  logoLine,\n  `• <b>Person:</b> ${d.aiPersonName || d.primaryClientName}`,\n  `• <b>Industry:</b> ${d.companyIndustry || 'N/A'}`,\n  `• <b>Size:</b> ${d.companySize ? d.companySize + ' employees' : 'N/A'}`,\n  `• <b>Location:</b> ${d.city}, ${d.state ? d.state + ', ' : ''}${d.country}`,\n  `• <b>Member since:</b> ${d.memberSince ? new Date(d.memberSince).getFullYear() : 'N/A'}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `📊 <b>Client History</b>`,\n  `• <b>Total Spent:</b> ${spentStr}`,\n  `• <b>Rating:</b> ${d.score}/5 (${d.feedbackCount} reviews)`,\n  `• <b>Jobs Posted:</b> ${d.postedCount} | Filled: ${d.filledCount} | Open: ${d.openCount}`,\n  `• <b>Active Contracts:</b> ${d.activeAssignments}`,\n  `• <b>Hours Logged:</b> ${d.hoursCount}`,\n  `• <b>Avg Hourly Rate Paid:</b> $${d.avgHourlyRate?.toFixed(2)}`,\n  `• <b>Payment:</b> ${d.isPaymentVerified ? '✅ Verified' : '❌ Not verified'}`,\n  `• <b>Enterprise:</b> ${d.isEnterprise ? '✅ Yes' : 'No'}`,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `👥 <b>Team Members</b>`,\n  staffLines,\n  ``,\n  `━━━━━━━━━━━━━━━━━━`,\n  `🏆 <b>Lead Score: ${score}/100 — ${leadGrade}</b>`,\n  scoreReasons.join(' | '),\n].filter(l => l !== null).join('\\n');\n\n// Trim to Telegram 4096 limit\nconst message = lines.length > 4096 ? lines.slice(0, 4090) + '...' : lines;\n\nreturn [{\n  json: {\n    // Pass everything forward for Google Sheets\n    ...d,\n    leadScore: score,\n    leadGrade,\n    message,\n    budgetFormatted: budgetStr,\n    spentFormatted: spentStr,\n    staffFormatted: staffs.map(s => s.name).join(', '),\n    scoreReasons: scoreReasons.join(', ')\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        784
+      ],
+      "id": "2569d00f-b7c8-4a5f-8e34-ea13f33e28c7",
+      "name": "Format Lead + Message"
+    },
+    {
+      "parameters": {
+        "chatId": "7122639561",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2464,
+        688
+      ],
+      "id": "70d3109b-6adc-4545-bef4-897988c76922",
+      "name": "Send to Telegram",
+      "webhookId": "5a18ae45-f161-4120-aea8-c37ede9f59f3",
+      "credentials": {
+        "telegramApi": {
+          "id": "iYQ8zI09FzoQr0dG",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upwork-leads",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        848,
+        784
+      ],
+      "id": "8df97f0c-5f6b-4059-b9c8-6f530eec8579",
+      "name": "Webhook2",
+      "webhookId": "6c6d69d0-3bae-48f1-9d6e-bbebbece62df"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Extract the company name from this Upwork job data.\n\nJOB TITLE: ${jobTitle}\n\nJOB DESCRIPTION (first 600 chars):\n${jobDescription.slice(0, 600)}\n\nOPEN JOBS:\n${openJobs.slice(0, 4).join('\\n')}\n\nWORK HISTORY TITLES:\n${workHistoryTitles.slice(0, 15).join('\\n')}\n\nNAMES FROM FEEDBACK: ${extractedNamesFromFeedback.join(', ')}\n\nLOCATION: ${city}, ${country}\n\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1552,
+        368
+      ],
+      "id": "da221a5d-ffa6-41ec-b1fb-37af3132afd9",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1056,
+        384
+      ],
+      "id": "80544c2c-8612-4cfc-b54c-a6650813dd03",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "RvykAVn0EWeql49Y",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserAutofixing",
+      "typeVersion": 1,
+      "position": [
+        1648,
+        592
+      ],
+      "id": "d65e48f7-4320-4e5c-a5d0-6f87db5b33a1",
+      "name": "Auto-fixing Output Parser"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        768
+      ],
+      "id": "dd8a666e-e4ad-4c44-b067-9f52d2c53470",
+      "name": "Google Gemini Chat Model1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "RvykAVn0EWeql49Y",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\"companyName\": \"s2sr\", \"personName\": \"ahmedbenyahia\", \"confidence\": \"high|medium|low\"}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1792,
+        800
+      ],
+      "id": "5b951eeb-4c76-4d07-b27c-15c762a6210f",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/1paAn8eIByuKcflmwvRgrV7vjrAQU5-AfAXaSlYSCbUc/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Feuille 1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1paAn8eIByuKcflmwvRgrV7vjrAQU5-AfAXaSlYSCbUc/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "jobTitle",
+              "displayName": "jobTitle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jobDescription",
+              "displayName": "jobDescription",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jobUrl",
+              "displayName": "jobUrl",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jobType",
+              "displayName": "jobType",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jobStatus",
+              "displayName": "jobStatus",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "engagement",
+              "displayName": "engagement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "postedOn",
+              "displayName": "postedOn",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "contractorTier",
+              "displayName": "contractorTier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "budget",
+              "displayName": "budget",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "budgetCurrency",
+              "displayName": "budgetCurrency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hourlyMin",
+              "displayName": "hourlyMin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hourlyMax",
+              "displayName": "hourlyMax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "skills",
+              "displayName": "skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "totalApplicants",
+              "displayName": "totalApplicants",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "totalHired",
+              "displayName": "totalHired",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "totalInvited",
+              "displayName": "totalInvited",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lastActivity",
+              "displayName": "lastActivity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "state",
+              "displayName": "state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "isPaymentVerified",
+              "displayName": "isPaymentVerified",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "isEnterprise",
+              "displayName": "isEnterprise",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "totalSpent",
+              "displayName": "totalSpent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "feedbackCount",
+              "displayName": "feedbackCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "totalAssignments",
+              "displayName": "totalAssignments",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "activeAssignments",
+              "displayName": "activeAssignments",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hoursCount",
+              "displayName": "hoursCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "totalJobsWithHires",
+              "displayName": "totalJobsWithHires",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "postedCount",
+              "displayName": "postedCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "filledCount",
+              "displayName": "filledCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "openCount",
+              "displayName": "openCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "avgHourlyRate",
+              "displayName": "avgHourlyRate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "memberSince",
+              "displayName": "memberSince",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "companyName",
+              "displayName": "companyName",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "companyLogo",
+              "displayName": "companyLogo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "companyIndustry",
+              "displayName": "companyIndustry",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "companySize",
+              "displayName": "companySize",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "agencyCompanyName",
+              "displayName": "agencyCompanyName",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "agencyCompanyLogo",
+              "displayName": "agencyCompanyLogo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "primaryClientName",
+              "displayName": "primaryClientName",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "staffs",
+              "displayName": "staffs",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "clientsWithAgencies",
+              "displayName": "clientsWithAgencies",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "extractedNamesFromFeedback",
+              "displayName": "extractedNamesFromFeedback",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "workHistoryTitles",
+              "displayName": "workHistoryTitles",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "openJobs",
+              "displayName": "openJobs",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "aiPrompt",
+              "displayName": "aiPrompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "needsAI",
+              "displayName": "needsAI",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "leadScore",
+              "displayName": "leadScore",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "leadGrade",
+              "displayName": "leadGrade",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "budgetFormatted",
+              "displayName": "budgetFormatted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "spentFormatted",
+              "displayName": "spentFormatted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "staffFormatted",
+              "displayName": "staffFormatted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "scoreReasons",
+              "displayName": "scoreReasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2464,
+        880
+      ],
+      "id": "241c3bbc-56be-4867-9dd1-5a8edc065b80",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "VcJVf8m93xZFsBHl",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        528
+      ],
+      "id": "7c5e57ae-2b5e-48d5-aaee-a60831cabda5",
+      "name": "OpenRouter Chat Model"
+    }
+  ],
+  "pinData": {
+    "Webhook2": [
+      {
+        "json": {
+          "headers": {
+            "host": "n8n-production-3b5ff.up.railway.app",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+            "content-length": "19025",
+            "accept": "*/*",
+            "accept-encoding": "gzip, deflate, br",
+            "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7,ar;q=0.6",
+            "content-type": "application/json",
+            "cookie": "rl_page_init_referrer=RudderEncrypt%3AU2FsdGVkX19QhCAzPLE5aMuIRGMjWyfOHINCzwSXdGUD6kiYLDK782lnFaBZYVNC; rl_page_init_referring_domain=RudderEncrypt%3AU2FsdGVkX19UPDegqs7mYILQC0p153Y9D1auNeLcJD9tanQ8A8AAT75DEG1cUN1U; rl_anonymous_id=RudderEncrypt%3AU2FsdGVkX1%2FCufWUNOzfZ71VrvJxSIK08IkWpVuAkrAe693BFbkpMJXROq41FOfOYLitiMTm7c8GetWhxBHmRg%3D%3D; rl_user_id=RudderEncrypt%3AU2FsdGVkX1%2FDV1bkawDGV%2FY0UE7b46d6n5BHlKcnppcAwn6cINpq4Q5Cv2%2BCtcDVBEnBFRUja1f9j7F5vgwg0r4p1kL5f0ZPLZpuv%2BDL9cZclgwsI7%2F5zQhZPiPZuymHXSGyLxrNioGawXpYFbulm6V%2BYKj%2FpDwZQYpGQcRCplE%3D; rl_trait=RudderEncrypt%3AU2FsdGVkX19XbnfSqu23HBvYnuowhDDVroQlu45AtOJVR%2FgDThHib5ntlvwHhnXxEYo9YiKFRJh4ZNh0OrffdLbnKZiny7ju8S2qoasVvQmxQK9PP2YNJhacJa%2F9Gpf0r72STr5OlCL32ttlKj%2BZTwbHZVP9ECC9XYcEOTiQhzw%3D; rl_session=RudderEncrypt%3AU2FsdGVkX19lyMekqjuZume73bMBxycWOXR6wKVxZymXwjjN1vpfE5qpyRlXUzeDNbxwCEd9%2FD72wsYQzW0bqHPOfDF%2FExzcGEnO41UXf%2FAX2J9x1vTG7cnHoQ19p%2BI%2FltR30L6SdGiYqXa540rFdw%3D%3D; ph_phc_4URIAm1uYfJO7j8kWSe0J8lc8IqnstRLS7Jx8NcakHo_posthog=%7B%22%24device_id%22%3A%22019d4067-5de1-789b-97e0-094245afbaca%22%2C%22distinct_id%22%3A%22e575230324d891fb277f43481084a6dc6b83dad6c0a0a3590105e88712a25d10%23d154bfe4-6cba-483c-9903-01ba8dea12bf%22%2C%22%24sesid%22%3A%5B1776801078344%2C%22019db190-70e2-7fa2-8e50-0b4edf56c779%22%2C1776800526557%5D%2C%22%24epp%22%3Atrue%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22https%3A%2F%2Fl.facebook.com%2F%22%2C%22u%22%3A%22https%3A%2F%2Fn8n-production-3b5ff.up.railway.app%2Fsignin%3Fredirect%3D%25252F%25253Ffbclid%25253DIwY2xjawQ3ujlleHRuA2FlbQIxMABicmlkETE1VzlqakRWajhiajg2WGMyc3J0YwZhcHBfaWQQMjIyMDM5MTc4ODIwMDg5MgABHrcgAyZAhYhRkFGpwejMl6jXKWRH-lQXA9PZ2t8t2QADMV8gbglgnfyV882K_aem_gl4ZeJToHwGfqVHD712mSg%22%7D%2C%22%24user_state%22%3A%22identified%22%7D",
+            "origin": "chrome-extension://aiphkalmhmhhojifcjnhimaoblnjkkie",
+            "priority": "u=1, i",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "none",
+            "sec-fetch-storage-access": "active",
+            "x-forwarded-for": "196.177.6.173, 104.156.93.66",
+            "x-forwarded-host": "n8n-production-3b5ff.up.railway.app",
+            "x-forwarded-proto": "https",
+            "x-railway-edge": "railway/europe-west4-drams3a",
+            "x-railway-request-id": "kPNbCT6UQV-2C-4b21mRUA",
+            "x-real-ip": "196.177.6.173",
+            "x-request-start": "1776801080030"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "_version": "v2-hybrid",
+            "source": "search",
+            "query": "full stack",
+            "jobCiphertext": "~022046614350981161621",
+            "jobTitle": "Full stack and Web app developer",
+            "jobType": "HOURLY",
+            "jobCategory": "Web Development",
+            "description": "Full-Stack Web & Mobile Developer (Contract – 12 Weeks)\n\nProject Length: 12 weeks\nStart: Immediate\nType: Contract / Project-Based\nTech Stack: React, JavaScript (web app first; mobile experience required)\n\nProject Overview\n\nWe are building a production-ready web application with a clear scope, defined requirements, and a fixed 12-week delivery timeline. Figma designs, requirements, and use cases are already prepared. This is an execution role, not an exploratory or learning project.\n\nYou will be responsible for building, integrating, and shipping a functional web app, with consideration for mobile responsiveness and future mobile extension.\n\nResponsibilities\n\nBuild and ship a complete web application using React\n\nDevelop and integrate front-end and back-end functionality\n\nTranslate Figma designs into clean, responsive UI\n\nImplement APIs, data handling, and core business logic\n\nEnsure performance, security, and scalability best practices\n\nCollaborate with a project manager and front-end/back-end contributors\n\nDeliver milestones on a strict 12-week timeline\n\nParticipate in code reviews and maintain clean, documented code\n\nRequired Experience\n\nProven experience as a Full-Stack Developer\n\nStrong hands-on experience with React\n\nDemonstrated experience building production web applications\n\nSolid understanding of JavaScript, REST APIs, and modern web architecture\n\nExperience building mobile-responsive applications\n\nAbility to work from defined requirements without excessive hand-holding\n\nStrong communication and deadline discipline\n\nNice to Have\n\nExperience with mobile frameworks or web-to-mobile adaptation\n\nExperience shipping MVPs or startup products\n\nFamiliarity with Agile or sprint-based delivery\n\nExperience working on fixed-timeline projects\n\nDeliverables\n\nFully functional web application delivered within 12 weeks\n\nClean, maintainable, documented codebase\n\nDeployed application ready for real users\n\nHow to Apply\n\nPlease include:\n\nLinks to live web apps or shipped products (required)\n\nYour role in each project\n\nYour availability for the full 12-week timeline\n\nConfirmation of React and full-stack experience\n\nApplications without real project examples will not be considered.",
+            "budget": {
+              "amount": 0,
+              "currencyCode": "USD"
+            },
+            "hourlyBudget": {
+              "hourlyBudgetMin": 15,
+              "hourlyBudgetMax": 22,
+              "hourlyBudgetType": "MANUAL"
+            },
+            "postedOn": "2026-04-21T15:37:40.555Z",
+            "skills": [],
+            "companyId": "1356396917902204929",
+            "companyName": "Cail LLC",
+            "companyContractDate": "2021-02-02T00:00:00.000Z",
+            "clientCountry": "United States",
+            "clientCity": "Mansfield",
+            "clientScore": 5,
+            "totalJobsPosted": 15,
+            "totalHired": 14,
+            "totalSpent": 28019.03,
+            "totalHoursWorked": 536.83,
+            "feedbackCount": 6,
+            "activeContracts": 4,
+            "paymentVerified": true,
+            "enterprise": false,
+            "totalApplicants": 164,
+            "totalInvitedToInterview": 0,
+            "totalHiredForOpening": 0,
+            "numberOfPositions": 1,
+            "lastBuyerActivity": "2026-04-21T15:37:40.529Z",
+            "jobStatus": "ACTIVE",
+            "hiredApplicants": [],
+            "clientDetails": [],
+            "runAt": "2026-04-21T19:51:17.949Z",
+            "_raw": {
+              "jobAuthDetails": {
+                "data": {
+                  "jobAuthDetails": {
+                    "hiredApplicantNames": null,
+                    "opening": {
+                      "job": {
+                        "status": "ACTIVE",
+                        "postedOn": "2026-04-21T15:37:40.555Z",
+                        "publishTime": "2026-04-21T18:39:53.454Z",
+                        "sourcingTime": null,
+                        "startDate": null,
+                        "deliveryDate": null,
+                        "workload": "More than 30 hrs/week",
+                        "contractorTier": "EXPERT",
+                        "description": "Full-Stack Web & Mobile Developer (Contract – 12 Weeks)\n\nProject Length: 12 weeks\nStart: Immediate\nType: Contract / Project-Based\nTech Stack: React, JavaScript (web app first; mobile experience required)\n\nProject Overview\n\nWe are building a production-ready web application with a clear scope, defined requirements, and a fixed 12-week delivery timeline. Figma designs, requirements, and use cases are already prepared. This is an execution role, not an exploratory or learning project.\n\nYou will be responsible for building, integrating, and shipping a functional web app, with consideration for mobile responsiveness and future mobile extension.\n\nResponsibilities\n\nBuild and ship a complete web application using React\n\nDevelop and integrate front-end and back-end functionality\n\nTranslate Figma designs into clean, responsive UI\n\nImplement APIs, data handling, and core business logic\n\nEnsure performance, security, and scalability best practices\n\nCollaborate with a project manager and front-end/back-end contributors\n\nDeliver milestones on a strict 12-week timeline\n\nParticipate in code reviews and maintain clean, documented code\n\nRequired Experience\n\nProven experience as a Full-Stack Developer\n\nStrong hands-on experience with React\n\nDemonstrated experience building production web applications\n\nSolid understanding of JavaScript, REST APIs, and modern web architecture\n\nExperience building mobile-responsive applications\n\nAbility to work from defined requirements without excessive hand-holding\n\nStrong communication and deadline discipline\n\nNice to Have\n\nExperience with mobile frameworks or web-to-mobile adaptation\n\nExperience shipping MVPs or startup products\n\nFamiliarity with Agile or sprint-based delivery\n\nExperience working on fixed-timeline projects\n\nDeliverables\n\nFully functional web application delivered within 12 weeks\n\nClean, maintainable, documented codebase\n\nDeployed application ready for real users\n\nHow to Apply\n\nPlease include:\n\nLinks to live web apps or shipped products (required)\n\nYour role in each project\n\nYour availability for the full 12-week timeline\n\nConfirmation of React and full-stack experience\n\nApplications without real project examples will not be considered.",
+                        "info": {
+                          "ciphertext": "~022046614350981161621",
+                          "id": "2046614350981161621",
+                          "type": "HOURLY",
+                          "access": "PUBLIC_INDEX",
+                          "title": "Full stack and Web app developer",
+                          "hideBudget": false,
+                          "createdOn": "2026-04-21T15:37:40.555Z",
+                          "notSureProjectDuration": false,
+                          "notSureFreelancersToHire": false,
+                          "notSureExperienceLevel": false,
+                          "premium": false
+                        },
+                        "segmentationData": [
+                          {
+                            "customValue": null,
+                            "label": "Ongoing project",
+                            "name": "Employment",
+                            "sortOrder": 1,
+                            "type": "EMPLOYMENT",
+                            "value": "EMPLOYMENT_POSITION"
+                          }
+                        ],
+                        "sandsData": {
+                          "occupation": {
+                            "freeText": null,
+                            "ontologyId": "upworkOccupation:fullstackdevelopment",
+                            "prefLabel": "Full Stack Development",
+                            "id": "1110580755107926016",
+                            "uid": "1110580755107926016"
+                          },
+                          "ontologySkills": [
+                            {
+                              "groupId": "1110580578586447872",
+                              "id": "1031626773660942336",
+                              "freeText": null,
+                              "prefLabel": "React",
+                              "groupPrefLabel": "Full Stack Development Skills",
+                              "relevance": "MANDATORY"
+                            },
+                            {
+                              "groupId": "1110580578754220032",
+                              "id": "1110580737240190976",
+                              "freeText": null,
+                              "prefLabel": "Web Application",
+                              "groupPrefLabel": "Full Stack Development Deliverables",
+                              "relevance": "MANDATORY"
+                            },
+                            {
+                              "groupId": "1110580578754220032",
+                              "id": "1484275089215770624",
+                              "freeText": null,
+                              "prefLabel": "Full-Stack Development",
+                              "groupPrefLabel": "Full Stack Development Deliverables",
+                              "relevance": "MANDATORY"
+                            }
+                          ],
+                          "additionalSkills": [
+                            {
+                              "groupId": null,
+                              "id": "1110580482322976768",
+                              "freeText": null,
+                              "prefLabel": "API",
+                              "relevance": "MANDATORY"
+                            }
+                          ]
+                        },
+                        "category": {
+                          "name": "Web Development",
+                          "urlSlug": "web-development"
+                        },
+                        "categoryGroup": {
+                          "name": "Web, Mobile & Software Dev",
+                          "urlSlug": "web-mobile-software-dev"
+                        },
+                        "budget": {
+                          "amount": 0,
+                          "currencyCode": "USD"
+                        },
+                        "annotations": {
+                          "customFields": {
+                            "siteSource": "desktop_rjp",
+                            "publishTime": "2026-04-21T18:39:53.454Z",
+                            "reuse": "2000015557056988507",
+                            "sourcingUpdateCount": "0",
+                            "sourcingUpdateForbidden": "false",
+                            "type": "RJP",
+                            "browser": "Chrome",
+                            "device": "Windows",
+                            "flowType": "RJP"
+                          },
+                          "tags": [
+                            "contractToHireSet",
+                            "searchable",
+                            "C2HJobsOptInEducation"
+                          ]
+                        },
+                        "engagementDuration": {
+                          "label": "3 to 6 months",
+                          "weeks": 18
+                        },
+                        "extendedBudgetInfo": {
+                          "hourlyBudgetMin": 15,
+                          "hourlyBudgetMax": 22,
+                          "hourlyBudgetType": "MANUAL"
+                        },
+                        "attachments": [],
+                        "clientActivity": {
+                          "lastBuyerActivity": "2026-04-21T15:37:40.529Z",
+                          "totalApplicants": 164,
+                          "totalHired": 0,
+                          "totalInvitedToInterview": 0,
+                          "unansweredInvites": 0,
+                          "invitationsSent": 0,
+                          "numberOfPositionsToHire": 1
+                        },
+                        "deliverables": null,
+                        "deadline": null,
+                        "tools": []
+                      },
+                      "qualifications": {
+                        "countries": null,
+                        "earnings": null,
+                        "groupRecno": null,
+                        "languages": null,
+                        "localDescription": null,
+                        "localFlexibilityDescription": null,
+                        "localMarket": true,
+                        "minJobSuccessScore": 0,
+                        "minOdeskHours": 0,
+                        "onSiteType": null,
+                        "prefEnglishSkill": "ANY",
+                        "regions": null,
+                        "risingTalent": false,
+                        "shouldHavePortfolio": false,
+                        "states": null,
+                        "tests": null,
+                        "timezones": null,
+                        "type": "ANY",
+                        "locationCheckRequired": false,
+                        "group": null,
+                        "location": null,
+                        "locations": null
+                      },
+                      "questions": []
+                    },
+                    "buyer": {
+                      "enterprise": false,
+                      "isPaymentMethodVerified": true,
+                      "info": {
+                        "location": {
+                          "offsetFromUtcMillis": -10800000,
+                          "countryTimezone": "America/Sao_Paulo (UTC-03:00)",
+                          "city": "Mansfield",
+                          "country": "United States"
+                        },
+                        "stats": {
+                          "totalAssignments": 15,
+                          "activeAssignmentsCount": 4,
+                          "hoursCount": 536.83,
+                          "feedbackCount": 6,
+                          "score": 5,
+                          "totalJobsWithHires": 14,
+                          "totalCharges": {
+                            "amount": 28019.03
+                          }
+                        },
+                        "company": {
+                          "name": null,
+                          "companyId": "1356396917902204929",
+                          "isEDCReplicated": null,
+                          "contractDate": "2021-02-02T00:00:00.000Z",
+                          "profile": {
+                            "industry": null,
+                            "size": null
+                          }
+                        },
+                        "jobs": {
+                          "openCount": 1,
+                          "postedCount": 11,
+                          "openJobs": []
+                        },
+                        "avgHourlyJobsRate": {
+                          "amount": 28.922861986103605
+                        }
+                      },
+                      "workHistory": [
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2026-02-09T00:00:00.000Z",
+                          "endDate": null,
+                          "totalCharge": 6171.8,
+                          "totalHours": 358.999998,
+                          "jobInfo": {
+                            "title": "web app",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "HOURLY",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Harshit V.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~019fc9cec322fd9e60"
+                          },
+                          "rate": {
+                            "amount": 20
+                          },
+                          "feedback": null,
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2026-02-09T00:00:00.000Z",
+                          "endDate": null,
+                          "totalCharge": 7080.25,
+                          "totalHours": 131.333333,
+                          "jobInfo": {
+                            "title": "Detailing Web App",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "HOURLY",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Shivani V.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01477d58c95f30ca7b"
+                          },
+                          "rate": {
+                            "amount": 50
+                          },
+                          "feedback": null,
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2022-09-11T15:34:04.000Z",
+                          "endDate": null,
+                          "totalCharge": 6910.38,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Skateboard designs x5",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Jeff Y.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01da06f9cb4f7c62e7"
+                          },
+                          "rate": null,
+                          "feedback": null,
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2022-07-28T04:56:14.000Z",
+                          "endDate": null,
+                          "totalCharge": 200,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Skateboard Designs - x1",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Jeff Y.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01da06f9cb4f7c62e7"
+                          },
+                          "rate": null,
+                          "feedback": null,
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2022-09-19T21:56:13.000Z",
+                          "endDate": "2026-03-28T02:20:20.027Z",
+                          "totalCharge": 450,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "T Shirt Design",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Rosie D.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~015fa1b8a08316e187"
+                          },
+                          "rate": null,
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": ""
+                          },
+                          "feedbackToClient": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": ""
+                          }
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2022-09-16T12:57:44.000Z",
+                          "endDate": "2026-03-28T02:19:19.616Z",
+                          "totalCharge": 150,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "T Shirt Design",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Rosie D.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~015fa1b8a08316e187"
+                          },
+                          "rate": null,
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": ""
+                          },
+                          "feedbackToClient": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": ""
+                          }
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2023-01-25T00:00:00.000Z",
+                          "endDate": "2024-06-17T12:02:32.072Z",
+                          "totalCharge": 230.01,
+                          "totalHours": 4.5,
+                          "jobInfo": {
+                            "title": "Fall 22 - Hoodie/Flannel",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "HOURLY",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Lucia C.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01b55b9f2fad11902f"
+                          },
+                          "rate": {
+                            "amount": 45
+                          },
+                          "feedback": null,
+                          "feedbackToClient": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": ""
+                          }
+                        },
+                        {
+                          "isPtcJob": false,
+                          "status": "CLOSED",
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2024-02-29T06:16:47.000Z",
+                          "endDate": "2024-06-15T16:27:30.913Z",
+                          "totalCharge": 100,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Streetwear Graphic Designer/Illustrator",
+                            "id": "1762992341962907648",
+                            "uid": "1762992341962907648",
+                            "access": "PUBLIC_INDEX",
+                            "type": "FIXED",
+                            "ciphertext": "~01f9813e0b01e22d03"
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Christian O.",
+                            "accessType": "PUBLIC",
+                            "ciphertext": "~015111854d034aa8c0"
+                          },
+                          "rate": null,
+                          "feedback": null,
+                          "feedbackToClient": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": ""
+                          }
+                        },
+                        {
+                          "isPtcJob": false,
+                          "status": "CLOSED",
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2024-02-20T02:14:04.000Z",
+                          "endDate": "2024-03-08T21:44:26.000Z",
+                          "totalCharge": 650,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Surface Pattern Designer",
+                            "id": "1759748723811557376",
+                            "uid": "1759748723811557376",
+                            "access": "PUBLIC_INDEX",
+                            "type": "FIXED",
+                            "ciphertext": "~014ac0f8c11a69af18"
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Michele B.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01d8ab62cd1be40593"
+                          },
+                          "rate": null,
+                          "feedback": null,
+                          "feedbackToClient": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": null
+                          }
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2022-09-01T13:42:24.000Z",
+                          "endDate": "2022-12-12T18:53:59.000Z",
+                          "totalCharge": 1507.8,
+                          "totalHours": 29.5,
+                          "jobInfo": {
+                            "title": "Fall 22 - Hoodie/Flannel",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "HOURLY",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Lucia C.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01b55b9f2fad11902f"
+                          },
+                          "rate": {
+                            "amount": 45
+                          },
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 4.65,
+                            "comment": null
+                          },
+                          "feedbackToClient": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": "Good client and I will definitely work again!"
+                          }
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2021-04-26T18:15:41.000Z",
+                          "endDate": "2022-09-11T14:58:44.000Z",
+                          "totalCharge": 300,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "T-shirt Designs",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Jeff Y.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01da06f9cb4f7c62e7"
+                          },
+                          "rate": null,
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": null
+                          },
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2021-03-22T03:42:48.000Z",
+                          "endDate": "2022-07-27T19:12:10.000Z",
+                          "totalCharge": 450,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Phase 3",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Jeff Y.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01da06f9cb4f7c62e7"
+                          },
+                          "rate": null,
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": null
+                          },
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2021-03-05T21:58:27.000Z",
+                          "endDate": "2022-07-27T19:11:19.000Z",
+                          "totalCharge": 1890,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Illustrator Needed",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Jeff Y.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01da06f9cb4f7c62e7"
+                          },
+                          "rate": null,
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": null
+                          },
+                          "feedbackToClient": null
+                        },
+                        {
+                          "isPtcJob": null,
+                          "status": null,
+                          "isEDCReplicated": null,
+                          "isPtcPrivate": false,
+                          "startDate": "2021-02-24T23:54:37.000Z",
+                          "endDate": "2022-07-27T19:10:24.000Z",
+                          "totalCharge": 385,
+                          "totalHours": 0,
+                          "jobInfo": {
+                            "title": "Illustrator Needed",
+                            "id": null,
+                            "uid": null,
+                            "access": "PRIVATE",
+                            "type": "FIXED",
+                            "ciphertext": null
+                          },
+                          "contractorInfo": {
+                            "contractorName": "Jeff Y.",
+                            "accessType": "PUBLIC_INDEX",
+                            "ciphertext": "~01da06f9cb4f7c62e7"
+                          },
+                          "rate": null,
+                          "feedback": {
+                            "feedbackSuppressed": false,
+                            "score": 5,
+                            "comment": null
+                          },
+                          "feedbackToClient": null
+                        }
+                      ]
+                    },
+                    "currentUserInfo": {
+                      "owner": false,
+                      "freelancerInfo": {
+                        "profileState": "AUTO_ACCEPTED",
+                        "applied": null,
+                        "devProfileCiphertext": "~01a6f8362e51ea45ed",
+                        "hired": null,
+                        "application": null,
+                        "pendingInvite": null,
+                        "contract": null,
+                        "hourlyRate": {
+                          "amount": 0
+                        },
+                        "qualificationsMatches": {
+                          "matches": [
+                            {
+                              "clientPreferred": "all",
+                              "clientPreferredLabel": "Any",
+                              "freelancerValue": "IC",
+                              "freelancerValueLabel": "Not Specified",
+                              "qualification": "FreelancerType",
+                              "qualified": true
+                            },
+                            {
+                              "clientPreferred": "0",
+                              "clientPreferredLabel": "At least 0%",
+                              "freelancerValue": "0",
+                              "freelancerValueLabel": "0%",
+                              "qualification": "MinimumJobSuccessScore",
+                              "qualified": true
+                            },
+                            {
+                              "clientPreferred": "0",
+                              "clientPreferredLabel": "Any",
+                              "freelancerValue": "",
+                              "freelancerValueLabel": null,
+                              "qualification": "EnglishLevel",
+                              "qualified": true
+                            },
+                            {
+                              "clientPreferred": "0",
+                              "clientPreferredLabel": "At least 0 hours",
+                              "freelancerValue": "0",
+                              "freelancerValueLabel": "0",
+                              "qualification": "HoursBilled",
+                              "qualified": true
+                            },
+                            {
+                              "clientPreferred": "ANY",
+                              "clientPreferredLabel": "Any",
+                              "freelancerValue": "0.00",
+                              "freelancerValueLabel": "0.00",
+                              "qualification": "Earnings",
+                              "qualified": true
+                            },
+                            {
+                              "clientPreferred": "Any",
+                              "clientPreferredLabel": null,
+                              "freelancerValue": null,
+                              "freelancerValueLabel": null,
+                              "qualification": "Language",
+                              "qualified": true
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "similarJobs": [],
+                    "workLocation": {
+                      "onSiteCity": null,
+                      "onSiteCountry": null,
+                      "onSiteReason": null,
+                      "onSiteReasonFlexible": null,
+                      "onSiteState": null,
+                      "onSiteType": null
+                    },
+                    "phoneVerificationStatus": {
+                      "status": null
+                    },
+                    "applicantsBidsStats": null,
+                    "specializedProfileOccupationId": "1110580755107926016",
+                    "applicationContext": {
+                      "freelancerAllowed": false,
+                      "clientAllowed": true
+                    }
+                  }
+                }
+              },
+              "clientCompanyMetadata": {
+                "data": {
+                  "clientCompanyMetadata": {
+                    "rid": "1000005138",
+                    "uid": "1356396917902204929",
+                    "name": "Cail LLC"
+                  }
+                }
+              },
+              "agencyStaffs": {
+                "data": {
+                  "agencyStaffsAuth": {
+                    "totalCount": 2,
+                    "staffs": [
+                      {
+                        "id": "1356396917902204930",
+                        "agencyOwner": false,
+                        "memberType": "CONTRACTOR",
+                        "vetted": null,
+                        "active": true,
+                        "canBeViewed": true,
+                        "personalData": {
+                          "id": "1356396917902204928",
+                          "rid": "1000021327",
+                          "name": "Chrystal B.",
+                          "portrait": null,
+                          "ciphertext": "~01c8a459d4cf28fb7c",
+                          "topRatedStatus": "not_eligible",
+                          "topRatedPlusStatus": "not_eligible",
+                          "jobSuccessScore": 0
+                        }
+                      },
+                      {
+                        "id": "2020714509603530371",
+                        "agencyOwner": false,
+                        "memberType": "CONTRACTOR",
+                        "vetted": null,
+                        "active": true,
+                        "canBeViewed": true,
+                        "personalData": {
+                          "id": "1472652829622407168",
+                          "rid": "1009557616",
+                          "name": "Joseph B.",
+                          "portrait": null,
+                          "ciphertext": "~01033cda48377c4e0c",
+                          "topRatedStatus": "not_eligible",
+                          "topRatedPlusStatus": "not_eligible",
+                          "jobSuccessScore": 0
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "webhookUrl": "https://n8n-production-3b5ff.up.railway.app/webhook/upwork-leads",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Extract Signals": {
+      "main": [
+        [
+          {
+            "node": "Needs AI?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs AI?": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No AI Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Company Extractor": {
+      "main": [
+        []
+      ]
+    },
+    "No AI Needed": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Format Lead + Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Lead + Message": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook2": {
+      "main": [
+        [
+          {
+            "node": "Extract Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        []
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-fixing Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Auto-fixing Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Auto-fixing Output Parser",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "45f73bb3-7fe1-494f-bb17-659d453e40ac",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e575230324d891fb277f43481084a6dc6b83dad6c0a0a3590105e88712a25d10"
+  },
+  "id": "pLDyTKOH7PZUAA1N",
+  "tags": []
+}

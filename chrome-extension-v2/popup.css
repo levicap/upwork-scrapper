@@ -1,0 +1,213 @@
+/* ── Reset / Base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 360px;
+  min-height: 200px;
+  max-height: 580px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  color: #1e293b;
+  background: #f8fafc;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #1e40af;
+  color: #fff;
+}
+.header-left { display: flex; align-items: center; gap: 8px; }
+.logo { font-size: 16px; }
+.title { font-weight: 600; font-size: 14px; letter-spacing: .02em; }
+.badge {
+  display: inline-block;
+  background: rgba(255,255,255,.25);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  letter-spacing: .05em;
+}
+
+/* Status dot in header */
+.dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.4);
+  flex-shrink: 0;
+}
+.dot-green  { background: #4ade80; border-color: #86efac; }
+.dot-yellow { background: #fbbf24; border-color: #fde68a; }
+.dot-red    { background: #f87171; border-color: #fca5a5; }
+.dot-grey   { background: #94a3b8; border-color: #cbd5e1; }
+
+/* ── Token Bar ───────────────────────────────────────────────────────────── */
+.token-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.token-ok      { background: #f0fdf4; color: #166534; }
+.token-partial { background: #fffbeb; color: #92400e; }
+.token-missing { background: #fef2f2; color: #991b1b; }
+.token-unknown { background: #f1f5f9; color: #64748b; }
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.section {
+  padding: 10px 12px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.count { font-size: 12px; font-weight: 600; color: #475569; }
+.actions { display: flex; gap: 4px; }
+
+/* ── Inputs ─────────────────────────────────────────────────────────────── */
+.row { display: flex; gap: 6px; margin-bottom: 7px; }
+
+.input {
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12px;
+  background: #fff;
+  color: #1e293b;
+  outline: none;
+  transition: border-color .15s;
+}
+.input:focus { border-color: #3b82f6; }
+.input-sm { flex: 0 0 60px; }
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.btn {
+  display: block;
+  width: 100%;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, opacity .15s;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.btn-primary { background: #2563eb; color: #fff; }
+.btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+.btn-primary.running { background: #dc2626; }
+.btn-primary.running:hover:not(:disabled) { background: #b91c1c; }
+
+.btn-ghost {
+  height: 24px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #475569;
+  transition: background .1s, border-color .1s;
+}
+.btn-ghost:hover:not(:disabled) { background: #e2e8f0; border-color: #94a3b8; }
+.btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
+.btn-danger { color: #dc2626; border-color: #fca5a5; }
+.btn-danger:hover:not(:disabled) { background: #fef2f2; }
+.btn-sm { font-size: 11px; }
+
+/* ── Progress ────────────────────────────────────────────────────────────── */
+.progress-section {
+  padding: 7px 12px;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+}
+.progress-bar-wrap {
+  height: 5px;
+  background: #bfdbfe;
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.progress-bar {
+  height: 100%;
+  background: #2563eb;
+  border-radius: 99px;
+  transition: width .3s ease;
+}
+.progress-label { font-size: 11px; color: #1d4ed8; font-weight: 500; }
+
+.hidden { display: none !important; }
+
+/* ── Jobs List ────────────────────────────────────────────────────────────── */
+.jobs-list {
+  flex: 1;
+  overflow-y: auto;
+  background: #fff;
+}
+
+.empty-state {
+  padding: 28px 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.job-card {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  cursor: default;
+  transition: background .1s;
+}
+.job-card:hover { background: #f8fafc; }
+
+.job-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #1e40af;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.job-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.tag-company { background: #ede9fe; color: #5b21b6; }
+.tag-country  { background: #e0f2fe; color: #0369a1; }
+.tag-budget   { background: #dcfce7; color: #166534; }
+.tag-type     { background: #fef3c7; color: #92400e; }
+.tag-status   { background: #fce7f3; color: #9d174d; }

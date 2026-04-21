@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upwork Scraper v2</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <span class="logo">⚡</span>
+      <span class="title">Upwork Scraper <span class="badge">v2</span></span>
+    </div>
+    <div id="status-dot" class="dot dot-grey" title="Token status"></div>
+  </div>
+
+  <!-- Token Status Bar -->
+  <div id="token-bar" class="token-bar token-unknown">
+    <span id="token-label">Checking tokens…</span>
+    <button id="btn-refresh-tokens" class="btn-ghost btn-sm" title="Re-read tokens from cookies">↻</button>
+  </div>
+
+  <!-- Search Controls -->
+  <div class="section">
+    <div class="row">
+      <input id="search-input" class="input" type="text" placeholder="Search query (e.g. n8n)" />
+      <input id="maxjobs-input" class="input input-sm" type="number" min="1" max="500" placeholder="Max" title="Max jobs" />
+    </div>
+    <button id="btn-scrape" class="btn btn-primary">▶ Run Scrape</button>
+    <button id="btn-test" class="btn btn-ghost" style="margin-top:4px;font-size:11px;padding:3px 8px">&#128270; Test Search GQL</button>
+  </div>
+
+  <!-- Debug output -->
+  <div id="debug-out" style="display:none;font-size:10px;font-family:monospace;background:#111;color:#0f0;padding:6px;margin:0 8px 6px;border-radius:4px;white-space:pre-wrap;max-height:120px;overflow-y:auto"></div>
+
+  <!-- Progress -->
+  <div id="progress-section" class="progress-section hidden">
+    <div class="progress-bar-wrap">
+      <div id="progress-bar" class="progress-bar" style="width:0%"></div>
+    </div>
+    <div id="progress-label" class="progress-label">Starting…</div>
+  </div>
+
+  <!-- Jobs Section -->
+  <div class="section-header">
+    <span id="jobs-count" class="count">0 jobs</span>
+    <div class="actions">
+      <button id="btn-export" class="btn-ghost btn-sm" title="Download JSON" disabled>⬇ Export</button>
+      <button id="btn-clear"  class="btn-ghost btn-sm btn-danger" title="Clear all jobs">✕ Clear</button>
+    </div>
+  </div>
+
+  <!-- Jobs List -->
+  <div id="jobs-list" class="jobs-list">
+    <div class="empty-state">Browse a search results page on Upwork<br>or click ▶ Run Scrape to start.</div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
