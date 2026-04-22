@@ -477,6 +477,7 @@ async function captureSearchPage(searchUrl) {
       // setting the flag before the real search page navigation even starts.
       let onSearchPage = false;
       let clickScheduled = false;
+      const ssrCiphers = [];
 
       const tryMatchHeaders = (rh, extra) => {
         const auth = (extra?.auth || rh['Authorization'] || rh['authorization'] || '').trim();
@@ -537,10 +538,42 @@ async function captureSearchPage(searchUrl) {
           }
         }
 
-        // Step 2: once the search page has loaded, schedule the Next Page click
+        // Step 2: once the search page has loaded, extract SSR page-1 ciphers then click Next Page.
+        // Page 1 is server-side rendered — no GQL fires for it, so job IDs must be read from
+        // the Nuxt state embedded in the HTML (__NUXT_DATA__ or window.__NUXT__).
         if (method === 'Page.loadEventFired' && onSearchPage && !clickScheduled) {
           clickScheduled = true;
-          log('captureSearchPage: search page load complete, waiting 3s for Vue hydration...');
+          log('captureSearchPage: page-1 loaded — extracting SSR ciphers before click...');
+          try {
+            const evalRes = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+              expression: `(() => {
+                const cs = new Set();
+                // Nuxt 3: __NUXT_DATA__ script tag
+                try {
+                  const el = document.getElementById('__NUXT_DATA__');
+                  if (el) JSON.stringify(JSON.parse(el.textContent)).replace(/"(~[0-9A-Za-z]{10,})"/g, (_, c) => cs.add(c));
+                } catch(e) {}
+                // Nuxt 2: window.__NUXT__
+                if (!cs.size && window.__NUXT__) {
+                  try { JSON.stringify(window.__NUXT__).replace(/"(~[0-9A-Za-z]{10,})"/g, (_, c) => cs.add(c)); } catch(e) {}
+                }
+                // Fallback: extract from job link hrefs
+                if (!cs.size) {
+                  document.querySelectorAll('a[href*="/jobs/"]').forEach(a => {
+                    const m = a.href.match(/_(~[0-9A-Za-z]{10,})/);
+                    if (m) cs.add(m[1]);
+                  });
+                }
+                return JSON.stringify([...cs]);
+              })()`,
+              returnByValue: true
+            });
+            const raw = evalRes?.result?.value ? JSON.parse(evalRes.result.value) : [];
+            ssrCiphers.push(...raw);
+            log('captureSearchPage: SSR page-1 ciphers:', ssrCiphers.length);
+          } catch(e) {
+            warn('captureSearchPage: SSR extraction error:', e.message);
+          }
           setTimeout(doClickOrNavigate, 3000);
         }
 
@@ -583,7 +616,7 @@ async function captureSearchPage(searchUrl) {
               { requestId: params.requestId });
             const body = resp?.body ? (resp.base64Encoded ? atob(resp.body) : resp.body) : null;
             if (!body) {
-              finish(capturedAuth.auth ? { auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: null } : null);
+              finish(capturedAuth.auth ? { auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: null, ssrCiphers } : null);
               return;
             }
             let parsed = null;
@@ -591,7 +624,7 @@ async function captureSearchPage(searchUrl) {
             const ujsData = parsed?.data?.search?.universalSearchNuxt?.userJobSearchV1;
             if (!ujsData) {
               log('captureSearchPage: response parsed but no ujsData — errors:', JSON.stringify(parsed?.errors)?.slice(0, 200));
-              finish(capturedAuth.auth ? { auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: null } : null);
+              finish(capturedAuth.auth ? { auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: null, ssrCiphers } : null);
               return;
             }
             const total = ujsData.paging?.total || 0;
@@ -600,11 +633,11 @@ async function captureSearchPage(searchUrl) {
               if (!c) return null;
               return String(c).startsWith('~') ? String(c) : '~02' + String(c);
             }).filter(Boolean);
-            log('captureSearchPage: success — total:', total, 'ciphers:', ciphers.length);
-            finish({ auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: { total, ciphers } });
+            log('captureSearchPage: success — total:', total, 'page-2 ciphers:', ciphers.length, 'ssr page-1 ciphers:', ssrCiphers.length);
+            finish({ auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: { total, ciphers }, ssrCiphers });
           } catch(e) {
             warn('captureSearchPage: getResponseBody failed:', e.message);
-            finish(capturedAuth.auth ? { auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: null } : null);
+            finish(capturedAuth.auth ? { auth: capturedAuth.auth, xsrf: capturedAuth.xsrf, firstPage: null, ssrCiphers } : null);
           }
         }
       };
@@ -1241,18 +1274,29 @@ async function searchAndProcess(searchUrl, maxJobs = EXT_CONFIG_V2.MAX_JOBS) {
     const pageSize = 10;
     let totalAvailable = maxJobs;
 
+    // Seed SSR page-1 ciphers (extracted directly from Nuxt __NUXT_DATA__ DOM, no GQL needed)
+    if (searchCapture.ssrCiphers?.length) {
+      for (const c of searchCapture.ssrCiphers) {
+        if (!seen.has(c)) { seen.add(c); ciphers.push(c); }
+      }
+      log(`pipeline: seeded ${searchCapture.ssrCiphers.length} SSR page-1 ciphers`);
+    }
+
+    // Seed page-2 ciphers from intercepted GQL response (from the Next Page click)
     if (searchCapture.firstPage) {
       totalAvailable = Math.min(searchCapture.firstPage.total || maxJobs, maxJobs);
       for (const c of searchCapture.firstPage.ciphers) {
         if (!seen.has(c)) { seen.add(c); ciphers.push(c); }
       }
-      log(`pipeline: seeded ${ciphers.length} ciphers from intercepted page (total=${totalAvailable})`);
+      log(`pipeline: seeded ${searchCapture.firstPage.ciphers.length} page-2 ciphers from GQL intercept (total=${totalAvailable})`);
     }
 
-    // Paginate remaining pages with the captured token (offset starts after intercepted page)
-    // If firstPage was captured, start at pageSize (skip page 1 already collected).
-    // If firstPage is null/empty, start at 0 to ensure we don't miss any jobs.
-    let offset = (searchCapture.firstPage?.ciphers?.length > 0) ? pageSize : 0;
+    // page 1 (SSR) + page 2 (GQL intercept) already captured → start pagination at offset 20
+    // only page 2 captured → start at offset 10
+    // nothing captured → start at offset 0
+    let offset = searchCapture.ssrCiphers?.length > 0
+      ? pageSize * 2
+      : (searchCapture.firstPage?.ciphers?.length > 0) ? pageSize : 0;
 
     while (ciphers.length < maxJobs && offset < totalAvailable) {
       log('search offset', offset, '— using captured token:', searchAuth.slice(0, 25) + '...');
