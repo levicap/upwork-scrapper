@@ -14,14 +14,17 @@ const EXT_CONFIG_V2 = {
   // Max jobs to collect per scrape run
   MAX_JOBS: 100,
 
-  // Parallel jobs processed simultaneously (keep 3–5 to avoid rate-limits)
-  QUEUE_CONCURRENCY: 3,
-
   // How long (ms) before stored tokens are considered stale → triggers re-read
   TOKEN_REFRESH_INTERVAL_MS: 8 * 60 * 1000,
 
   // Base delay (ms) between sequential API calls inside one job's processing
-  API_DELAY_MS: 500,
+  API_DELAY_MS: 2500,
+
+  // Delay (ms) between finishing one job and starting the next
+  JOB_DELAY_MS: 7000,
+
+  // Parallel jobs processed simultaneously (keep 1–2 to avoid Cloudflare rate-limits)
+  QUEUE_CONCURRENCY: 1,
 
   // Cooldown (ms) between auto-scrape runs for the same search URL
   AUTO_SCRAPE_COOLDOWN_MS: 5 * 60 * 1000,

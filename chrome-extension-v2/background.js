@@ -35,6 +35,12 @@ const tokens = {
   detailsXsrf: '',
   detailsTs:   0,
 
+  // Live-captured: open a job page ONCE per run, reuse for all jobAuthDetails calls.
+  // Fallback when cookie-based _vt tokens are missing/expired (e.g. after Cloudflare ban).
+  jobDetailsAuth: '',
+  jobDetailsXsrf: '',
+  jobDetailsTs:   0,
+
   // Live-captured: open an agency page ONCE per run, reuse for all agencyStaffsAuth calls.
   // Any /agencies/<id>/ page (agency or not) fires GQL with the ag_vs_ui microapp token.
   // This token is session-scoped (not tied to a specific agency) so it works for all companyIds.
@@ -216,6 +222,16 @@ async function gql(alias, query, variables, auth, opts = {}) {
   const tid  = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r    = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ query, variables }), signal: ctrl.signal });
+    // Cloudflare 429 / 1015 rate-limit: back off and retry once
+    if (r.status === 429 || r.status === 1015) {
+      clearTimeout(tid);
+      const backoff = 15000 + Math.floor(Math.random() * 10000);
+      warn('gql: rate-limited (HTTP', r.status, ') — backing off', Math.round(backoff/1000), 's then retrying');
+      await sleep(backoff);
+      const r2    = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ query, variables }) });
+      const text2 = await r2.text();
+      return { status: r2.status, data: tryJson(text2) };
+    }
     const text = await r.text();
     return { status: r.status, data: tryJson(text) };
   } catch(e) {
@@ -677,6 +693,50 @@ async function captureDetailsAuth() {
   }
 }
 
+// ── captureJobDetailsAuth ─────────────────────────────────────────────────────
+// Opens a real job page ONCE per run to capture the JobDetailsNuxt microapp
+// Authorization token via CDP. Used as a live-token fallback when cookie-based
+// _vt tokens are missing or expired (e.g. after a Cloudflare rate-limit reset).
+let _jobDetailsCaptureLock = false;
+
+async function captureJobDetailsAuth(cipher) {
+  const TTL = EXT_CONFIG_V2.DETAILS_TOKEN_TTL_MS;
+  if (tokens.jobDetailsAuth && (Date.now() - tokens.jobDetailsTs) < TTL) {
+    return { auth: tokens.jobDetailsAuth, xsrf: tokens.jobDetailsXsrf };
+  }
+  if (_jobDetailsCaptureLock) {
+    for (let i = 0; i < 40; i++) { await sleep(500); if (!_jobDetailsCaptureLock) break; }
+    if (tokens.jobDetailsAuth) return { auth: tokens.jobDetailsAuth, xsrf: tokens.jobDetailsXsrf };
+    return null;
+  }
+  _jobDetailsCaptureLock = true;
+  try {
+    // Upwork redirects unknown-title job URLs to the correct page — GQL still fires.
+    const jobUrl = `https://www.upwork.com/jobs/placeholder_${cipher}/`;
+    const captured = await _cdpCaptureTab(
+      jobUrl,
+      url => url.includes('api/graphql/v1'),
+      35000,
+      false,
+      true  // active: true — needs JS hydration to fire job details GQL
+    );
+    if (captured) {
+      tokens.jobDetailsAuth = captured.auth;
+      tokens.jobDetailsXsrf = captured.xsrf || tokens.xsrf;
+      tokens.jobDetailsTs   = Date.now();
+      persistTokens();
+      log('captureJobDetailsAuth: ok', captured.auth.slice(0, 30));
+    } else {
+      warn('captureJobDetailsAuth: timed out for cipher', cipher);
+    }
+    return captured;
+  } catch(e) {
+    warn('captureJobDetailsAuth error:', e.message); return null;
+  } finally {
+    _jobDetailsCaptureLock = false;
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // SECTION 7 — QUEUE (concurrency control)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1005,18 +1065,38 @@ async function processJob(cipher, msgHeaders, detailsHeaders, searchQuery) {
   const openingId = cipherToOpeningId(cipher);
 
   // ── Step 1: Job Auth Details (direct SW call — NO tab) ──────────────────
-  const jobToken = tokens.JobDetailsNuxt_vt || tokens.FxJobPosting_vt || tokens.oauth2_global_js_token;
-  const jadRes   = await gql(
-    'gql-query-get-auth-job-details',
-    Q_JOB_AUTH_DETAILS,
-    { id: cipher, isFreelancerOrAgency: true, isLoggedIn: true },
-    jobToken,
-    { xsrf: tokens.xsrf } // NO tenantId — _vt token
-  );
+  // Helper: pick freshest token and fire the request
+  const fetchJAD = () => {
+    // Cookie tokens first; fall back to live-captured job details token if all are empty
+    const tok = tokens.JobDetailsNuxt_vt || tokens.FxJobPosting_vt || tokens.oauth2_global_js_token || tokens.jobDetailsAuth;
+    return gql(
+      'gql-query-get-auth-job-details',
+      Q_JOB_AUTH_DETAILS,
+      { id: cipher, isFreelancerOrAgency: true, isLoggedIn: true },
+      tok,
+      { xsrf: tokens.xsrf } // NO tenantId — _vt token
+    );
+  };
+
+  let jadRes = await fetchJAD();
+
+  // Detect "Authentication failed" — stale cached _vt/global token.
+  // Force-refresh cookies and retry ONCE.
+  const isAuthFail = res =>
+    res.status === 401 ||
+    res.data?.message?.toLowerCase?.().includes('authentication failed') ||
+    res.data?.errors?.some(e => e.message?.toLowerCase?.().includes('authentication failed'));
+
+  if (isAuthFail(jadRes)) {
+    warn('processJob: auth failed for', cipher, '— refreshing tokens and retrying...');
+    await refreshTokens(true);
+    jadRes = await fetchJAD();
+  }
 
   const jad = jadRes.data?.data?.jobAuthDetails;
   if (!jad) {
-    warn('processJob: no jobAuthDetails for', cipher, 'status:', jadRes.status, jadRes.error || '');
+    warn('processJob: no jobAuthDetails for', cipher, 'status:', jadRes.status,
+      jadRes.data?.message || jadRes.error || '');
     return null;
   }
 
@@ -1185,7 +1265,15 @@ async function searchAndProcess(searchUrl, maxJobs = EXT_CONFIG_V2.MAX_JOBS) {
       );
 
       const ujsData = r.data?.data?.search?.universalSearchNuxt?.userJobSearchV1;
-      if (!ujsData) { warn('search: no data at offset', offset, 'status:', r.status, JSON.stringify(r.data)?.slice(0,200)); break; }
+      if (!ujsData) {
+        const msg = r.data?.message || JSON.stringify(r.data)?.slice(0,200);
+        if (r.status === 401 || r.data?.message?.toLowerCase?.().includes('authentication failed')) {
+          warn('search: auth failed at offset', offset, '— search token expired, stopping pagination');
+          break; // can't recover mid-pagination; pipeline will recapture next run
+        }
+        warn('search: no data at offset', offset, 'status:', r.status, msg);
+        break;
+      }
 
       const remoteTotal = ujsData.paging?.total || 0;
       totalAvailable = Math.min(remoteTotal, maxJobs);
@@ -1219,6 +1307,10 @@ async function searchAndProcess(searchUrl, maxJobs = EXT_CONFIG_V2.MAX_JOBS) {
     const detailsHeaders = await captureDetailsAuth();
     if (!detailsHeaders) warn('pipeline: details token unavailable — agency profiles skipped');
 
+    // job details token — live fallback for jobAuthDetails when cookie _vt tokens are missing
+    const jobDetailsHeaders = await captureJobDetailsAuth(ciphers[0]);
+    if (!jobDetailsHeaders) warn('pipeline: job details token unavailable — will rely on cookie tokens');
+
     broadcastProgress({ running: true, phase: 'processing', query: rawQuery, total: ciphers.length, processed: 0 });
 
     // Step 3: Process all jobs with queue (no tabs per job)
@@ -1228,8 +1320,8 @@ async function searchAndProcess(searchUrl, maxJobs = EXT_CONFIG_V2.MAX_JOBS) {
 
     await Promise.all(ciphers.map(cipher => queue.add(async () => {
       try {
-        // Small random jitter to avoid thundering herd
-        await sleep(EXT_CONFIG_V2.API_DELAY_MS + Math.floor(Math.random() * 500));
+        // Staggered start delay to avoid thundering herd on concurrent queue slots
+        await sleep(EXT_CONFIG_V2.JOB_DELAY_MS + Math.floor(Math.random() * 3000));
 
         const payload = await processJob(cipher, msgHeaders, detailsHeaders, rawQuery);
         if (!payload) return;
